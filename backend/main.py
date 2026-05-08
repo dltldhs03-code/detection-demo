@@ -3,7 +3,7 @@ import json
 import os
 from collections import deque
 from datetime import datetime, timezone
-from urllib.parse import urlencode, urljoin
+from urllib.parse import quote, unquote, urlencode, urljoin, urlparse
 from urllib.request import urlopen
 
 from flask import Flask, Response, jsonify, request
@@ -128,6 +128,7 @@ def _get_cctv_items():
             "selected": index == selected_index,
             "cctv_url": item.get("cctv_url", ""),
             "stream_url": item.get("stream_url", ""),
+            "player_url": f"/api/stream/{index}",
         }
         for index, item in enumerate(cctv_records)
     ]
@@ -149,7 +150,7 @@ def _get_status():
         "accident_probability_history": list(accident_probability_history),
         "accident_status": metrics["accident_status"],
         "stream_status": "연결됨" if latest_detection else "준비 중",
-        "player_url": selected_cctv.get("stream_url") or selected_cctv.get("cctv_url") or "/video_feed",
+        "player_url": f"/api/stream/{selected_index}",
         "cctv_url": selected_cctv.get("cctv_url", ""),
         "stream_url": selected_cctv.get("stream_url", ""),
         "cctv_source": cctv_records_source,
@@ -409,6 +410,72 @@ def video_feed():
     # This remote demo returns a lightweight SVG frame so Vercel can display
     # the same route without requiring YOLO/OpenCV on Railway.
     return Response(_build_svg_frame(), mimetype="image/svg+xml")
+
+
+def _fetch_url_text(url, timeout=12):
+    with urlopen(url, timeout=timeout) as response:
+        final_url = response.geturl()
+        content_type = response.headers.get("Content-Type", "")
+        text = response.read().decode("utf-8", errors="replace")
+    return final_url, content_type, text
+
+
+def _is_allowed_cctv_url(url):
+    parsed = urlparse(url)
+    return parsed.scheme in {"http", "https"} and parsed.netloc.endswith("ktict.co.kr")
+
+
+def _proxy_segment_url(url):
+    return f"/api/stream-segment?url={quote(url, safe='')}"
+
+
+@app.route("/api/stream/<int:index>", methods=["GET"])
+def api_stream(index):
+    _ensure_cctv_records()
+    if index < 0 or index >= len(cctv_records):
+        return Response("Invalid CCTV index", status=400)
+
+    source_url = cctv_records[index].get("stream_url") or cctv_records[index].get("cctv_url")
+    if not source_url:
+        return Response(_build_svg_frame(), mimetype="image/svg+xml")
+
+    try:
+        playlist_url, _content_type, playlist_text = _fetch_url_text(source_url)
+    except Exception as exc:
+        return Response(f"Failed to fetch CCTV playlist: {exc}", status=502)
+
+    rewritten_lines = []
+    for line in playlist_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            rewritten_lines.append(line)
+            continue
+
+        absolute_url = urljoin(playlist_url, stripped)
+        rewritten_lines.append(_proxy_segment_url(absolute_url))
+
+    response = Response("\n".join(rewritten_lines), mimetype="application/vnd.apple.mpegurl")
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route("/api/stream-segment", methods=["GET"])
+def api_stream_segment():
+    raw_url = request.args.get("url", "")
+    source_url = unquote(raw_url)
+    if not _is_allowed_cctv_url(source_url):
+        return Response("Blocked stream URL", status=400)
+
+    try:
+        with urlopen(source_url, timeout=12) as upstream:
+            data = upstream.read()
+            content_type = upstream.headers.get("Content-Type") or "application/octet-stream"
+    except Exception as exc:
+        return Response(f"Failed to fetch CCTV segment: {exc}", status=502)
+
+    response = Response(data, mimetype=content_type)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 if __name__ == "__main__":

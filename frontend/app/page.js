@@ -108,7 +108,9 @@ export default function HomePage() {
   }, [status]);
 
   const viewStatus = status || buildEmptyStatus(loading, error);
-  const videoUrl = viewStatus.stream_url || viewStatus.cctv_url || viewStatus.player_url || "";
+  const videoUrl = normalizeBackendUrl(
+    viewStatus.player_url || viewStatus.stream_url || viewStatus.cctv_url || "",
+  );
 
   return (
     <main className="page">
@@ -264,6 +266,13 @@ export default function HomePage() {
       </section>
     </main>
   );
+}
+
+function normalizeBackendUrl(url) {
+  if (!url) return "";
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  if (!API_URL) return url;
+  return `${API_URL}${url}`;
 }
 
 function CctvVideoPlayer({ src, fallbackSrc }) {
