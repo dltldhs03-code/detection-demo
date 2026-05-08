@@ -277,19 +277,24 @@ function normalizeBackendUrl(url) {
 
 function CctvVideoPlayer({ src, fallbackSrc }) {
   const videoRef = useRef(null);
-  const [canUseVideo, setCanUseVideo] = useState(Boolean(src));
+  const [playerError, setPlayerError] = useState("");
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !src) return undefined;
 
-    setCanUseVideo(true);
+    setPlayerError("");
     let hls;
     let destroyed = false;
 
     async function attachSource() {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+
       if (video.canPlayType("application/vnd.apple.mpegurl")) {
         video.src = src;
+        video.play().catch(() => {});
         return;
       }
 
@@ -297,15 +302,29 @@ function CctvVideoPlayer({ src, fallbackSrc }) {
       if (destroyed) return;
 
       if (Hls?.isSupported()) {
-        hls = new Hls();
+        hls = new Hls({
+          enableWorker: true,
+          lowLatencyMode: false,
+        });
+        hls.on(Hls.Events.ERROR, (_event, data) => {
+          if (data?.fatal) {
+            setPlayerError(`HLS error: ${data.type || "unknown"}`);
+            hls.destroy();
+          }
+        });
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          video.play().catch(() => {});
+        });
         hls.loadSource(src);
         hls.attachMedia(video);
       } else {
-        video.src = src;
+        setPlayerError("이 브라우저에서 HLS 재생을 지원하지 않습니다.");
       }
     }
 
-    attachSource().catch(() => setCanUseVideo(false));
+    attachSource().catch((err) => {
+      setPlayerError(`HLS loader failed: ${err.message}`);
+    });
 
     return () => {
       destroyed = true;
@@ -319,21 +338,20 @@ function CctvVideoPlayer({ src, fallbackSrc }) {
 
   return (
     <div className="video-player-wrap">
-      {canUseVideo ? (
-        <video
-          id="video-feed"
-          ref={videoRef}
-          autoPlay
-          controls
-          muted
-          playsInline
-          onError={() => setCanUseVideo(false)}
-        />
-      ) : fallbackSrc ? (
-        <img id="video-feed" src={fallbackSrc} alt="CCTV detection feed" />
-      ) : (
-        <div className="video-placeholder" id="video-feed">
-          CCTV 영상 URL을 불러오지 못했습니다.
+      <video
+        id="video-feed"
+        ref={videoRef}
+        autoPlay
+        controls
+        muted
+        playsInline
+        onError={() => setPlayerError("video element failed to play stream")}
+      />
+      {playerError && (
+        <div className="video-player-error">
+          <strong>영상 재생 오류</strong>
+          <span>{playerError}</span>
+          {fallbackSrc && <span>Fallback: {fallbackSrc}</span>}
         </div>
       )}
     </div>
@@ -361,24 +379,7 @@ function buildEmptyStatus(loading, error) {
 }
 
 function loadHls() {
-  if (window.Hls) return Promise.resolve(window.Hls);
-
-  return new Promise((resolve, reject) => {
-    const existingScript = document.querySelector("script[data-hls-js]");
-    if (existingScript) {
-      existingScript.addEventListener("load", () => resolve(window.Hls), { once: true });
-      existingScript.addEventListener("error", reject, { once: true });
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.src = "https://cdn.jsdelivr.net/npm/hls.js@latest";
-    script.async = true;
-    script.dataset.hlsJs = "true";
-    script.onload = () => resolve(window.Hls);
-    script.onerror = reject;
-    document.head.appendChild(script);
-  });
+  return import("hls.js").then((mod) => mod.default || mod);
 }
 
 function fitCanvas(canvas) {
