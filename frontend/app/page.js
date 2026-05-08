@@ -305,6 +305,10 @@ function CctvVideoPlayer({ src, fallbackSrc }) {
         hls = new Hls({
           enableWorker: true,
           lowLatencyMode: false,
+          maxBufferLength: 20,
+          maxMaxBufferLength: 40,
+          liveSyncDuration: 8,
+          liveMaxLatencyDuration: 20,
         });
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (data?.fatal) {
