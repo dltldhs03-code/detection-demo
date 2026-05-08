@@ -1,6 +1,8 @@
+import "./globals.css";
+
 export const metadata = {
-  title: "Jetson Detection Dashboard Demo",
-  description: "A simple dashboard for simulated Jetson Nano object detection results",
+  title: "CCTV Monitor",
+  description: "CCTV object detection monitoring dashboard",
 };
 
 export default function RootLayout({ children }) {
