@@ -1,142 +1,102 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 const STATUS_REFRESH_INTERVAL_MS = 1000;
 
-const CCTV_ITEMS = [
-  "[경부선] 천안호두휴게소",
-  "[경부선] 옥산휴게소",
-  "[경부선] 남청주육교",
-  "[경부선] 청주분기점(고정)",
-  "[경부선] 가마육교",
-  "[경부선] 금계",
-  "[청주영덕선] 문동1",
-  "[청주영덕선] 청주분기점",
-  "[청주영덕선] 문동2",
-  "[청주영덕선] 문의청남대휴게소2",
-  "[중부선] 증평2",
-  "[중부선] 오창",
-  "[중부선] 서청주",
-  "[경부선] 남이분기점",
-  "[경부선] 속창육교",
-  "[경부선] 몽단이고개",
-  "[경부선] 수의",
-  "[경부선] 죽암교",
-  "[경부선] 옥산분기점",
-  "[경부선] 강서",
-];
-
 export default function HomePage() {
-  const [selectedIndex, setSelectedIndex] = useState(0);
-  const [latestDetection, setLatestDetection] = useState(null);
+  const [status, setStatus] = useState(null);
+  const [cctvs, setCctvs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [history, setHistory] = useState({
-    trafficUp: [0],
-    trafficDown: [0],
-    accidentProbability: [0],
-  });
 
   const trafficUpChartRef = useRef(null);
   const trafficDownChartRef = useRef(null);
   const accidentProbabilityChartRef = useRef(null);
 
-  useEffect(() => {
-    let isMounted = true;
-
-    async function refreshStatus() {
-      if (!API_URL) {
-        if (isMounted) {
-          setError("NEXT_PUBLIC_API_URL is not set.");
-          setLoading(false);
-        }
-        return;
-      }
-
-      try {
-        const response = await fetch(`${API_URL}/api/latest`, { cache: "no-store" });
-        if (!response.ok) {
-          throw new Error(`Backend returned ${response.status}`);
-        }
-        const result = await response.json();
-        if (isMounted) {
-          setLatestDetection(result.data);
-          setError("");
-          setLoading(false);
-        }
-      } catch (err) {
-        if (isMounted) {
-          setError(`Cannot reach backend: ${err.message}`);
-          setLoading(false);
-        }
-      }
+  async function refreshStatus() {
+    if (!API_URL) {
+      setError("NEXT_PUBLIC_API_URL is not set.");
+      setLoading(false);
+      return;
     }
 
-    refreshStatus();
-    const intervalId = setInterval(refreshStatus, STATUS_REFRESH_INTERVAL_MS);
+    try {
+      const response = await fetch(`${API_URL}/api/status`, { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(`Backend returned ${response.status}`);
+      }
+      const data = await response.json();
+      setStatus(data);
+      setError("");
+      setLoading(false);
+    } catch (err) {
+      setError(`Cannot reach backend: ${err.message}`);
+      setLoading(false);
+    }
+  }
 
-    return () => {
-      isMounted = false;
-      clearInterval(intervalId);
-    };
+  async function refreshCctvs() {
+    if (!API_URL) return;
+
+    try {
+      const response = await fetch(`${API_URL}/api/cctvs`, { cache: "no-store" });
+      if (!response.ok) return;
+      const data = await response.json();
+      setCctvs(data.items || []);
+    } catch (_err) {
+      setCctvs([]);
+    }
+  }
+
+  async function selectCctv(index) {
+    if (!API_URL) return;
+
+    try {
+      const response = await fetch(`${API_URL}/api/select/${index}`, {
+        method: "POST",
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) {
+        alert(data.error || "스트림 전환에 실패했습니다.");
+        return;
+      }
+      setStatus(data.status);
+      await refreshCctvs();
+    } catch (err) {
+      alert(`스트림 전환에 실패했습니다: ${err.message}`);
+    }
+  }
+
+  useEffect(() => {
+    refreshStatus();
+    refreshCctvs();
+    const intervalId = setInterval(refreshStatus, STATUS_REFRESH_INTERVAL_MS);
+    return () => clearInterval(intervalId);
   }, []);
 
-  const status = useMemo(() => {
-    const confidence = Number(latestDetection?.confidence || 0);
-    const trafficCount = latestDetection ? Math.max(1, Math.round(confidence * 10)) : 0;
-    const trafficUp = latestDetection ? Math.ceil(trafficCount * 0.55) : 0;
-    const trafficDown = latestDetection ? Math.max(0, trafficCount - trafficUp) : 0;
-    const imbalance = Math.abs(trafficUp - trafficDown);
-    const accidentProbability = latestDetection
-      ? Math.min(99, Math.round(12 + trafficCount * 8 + imbalance * 3))
-      : 0;
-
-    return {
-      selected_index: selectedIndex,
-      selected_name: CCTV_ITEMS[selectedIndex],
-      stream_status: error ? "연결 오류" : loading ? "준비 중" : "연결됨",
-      traffic_count: trafficCount,
-      traffic_up: trafficUp,
-      traffic_down: trafficDown,
-      accident_probability: accidentProbability,
-      accident_status: latestDetection ? `${accidentProbability}%` : "-",
-      yolo_enabled: Boolean(latestDetection) && !error,
-      roi_path: API_URL || "NEXT_PUBLIC_API_URL is not set",
-    };
-  }, [error, latestDetection, loading, selectedIndex]);
-
   useEffect(() => {
-    setHistory((current) => ({
-      trafficUp: appendHistory(current.trafficUp, status.traffic_up),
-      trafficDown: appendHistory(current.trafficDown, status.traffic_down),
-      accidentProbability: appendHistory(
-        current.accidentProbability,
-        status.accident_probability,
-      ),
-    }));
-  }, [status.traffic_up, status.traffic_down, status.accident_probability]);
-
-  useEffect(() => {
+    if (!status) return;
     renderCharts({
-      trafficCount: status.traffic_count,
-      trafficUpHistory: history.trafficUp,
-      trafficDownHistory: history.trafficDown,
-      accidentProbabilityHistory: history.accidentProbability,
+      trafficCount: status.traffic_count || 0,
+      trafficUpHistory: status.traffic_up_history || [0],
+      trafficDownHistory: status.traffic_down_history || [0],
+      accidentProbabilityHistory: status.accident_probability_history || [0],
       trafficUpChart: trafficUpChartRef.current,
       trafficDownChart: trafficDownChartRef.current,
       accidentProbabilityChart: accidentProbabilityChartRef.current,
     });
-  }, [history, status.traffic_count]);
+  }, [status]);
 
   useEffect(() => {
     function handleResize() {
+      if (!status) return;
       renderCharts({
-        trafficCount: status.traffic_count,
-        trafficUpHistory: history.trafficUp,
-        trafficDownHistory: history.trafficDown,
-        accidentProbabilityHistory: history.accidentProbability,
+        trafficCount: status.traffic_count || 0,
+        trafficUpHistory: status.traffic_up_history || [0],
+        trafficDownHistory: status.traffic_down_history || [0],
+        accidentProbabilityHistory: status.accident_probability_history || [0],
         trafficUpChart: trafficUpChartRef.current,
         trafficDownChart: trafficDownChartRef.current,
         accidentProbabilityChart: accidentProbabilityChartRef.current,
@@ -145,25 +105,30 @@ export default function HomePage() {
 
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [history, status.traffic_count]);
+  }, [status]);
+
+  const viewStatus = status || buildEmptyStatus(loading, error);
+  const videoUrl = viewStatus.stream_url || viewStatus.cctv_url || viewStatus.player_url || "";
 
   return (
     <main className="page">
       <header className="topbar">
         <div>
           <p className="eyebrow">Selected CCTV</p>
-          <h1 id="selected-name">{status.selected_name}</h1>
+          <h1 id="selected-name">{viewStatus.selected_name}</h1>
         </div>
         <div className="status">
           <span className="status-label">Stream Status</span>
-          <strong id="stream-status">{status.stream_status}</strong>
+          <strong id="stream-status">{error || viewStatus.stream_status}</strong>
           <span
-            className={`status-chip ${status.yolo_enabled ? "is-on" : "is-off"}`}
+            className={`status-chip ${viewStatus.yolo_enabled ? "is-on" : "is-off"}`}
             id="yolo-chip"
           >
-            {status.yolo_enabled ? "YOLO ON" : "YOLO OFF"}
+            {viewStatus.yolo_enabled ? "YOLO ON" : "YOLO OFF"}
           </span>
-          <p className="status-meta" id="roi-path">{status.roi_path}</p>
+          <p className="status-meta" id="roi-path">
+            {viewStatus.roi_path}
+          </p>
         </div>
       </header>
 
@@ -173,7 +138,7 @@ export default function HomePage() {
             <h2>Detection Screen</h2>
           </div>
           <div className="video-card">
-            <DetectionScreen detection={latestDetection} loading={loading} error={error} />
+            <CctvVideoPlayer src={videoUrl} fallbackSrc={API_URL ? `${API_URL}/video_feed` : ""} />
           </div>
 
           <section className="analytics">
@@ -185,7 +150,7 @@ export default function HomePage() {
                 </div>
                 <div className="traffic-total">
                   <span>현재 총 교통량</span>
-                  <strong id="traffic-count">{status.traffic_count}</strong>
+                  <strong id="traffic-count">{viewStatus.traffic_count}</strong>
                 </div>
               </div>
 
@@ -197,7 +162,7 @@ export default function HomePage() {
                       <h4>하행 교통량</h4>
                     </div>
                     <strong className="chart-value" id="traffic-down">
-                      {status.traffic_down}
+                      {viewStatus.traffic_down}
                     </strong>
                   </div>
                   <canvas
@@ -216,7 +181,7 @@ export default function HomePage() {
                       <h4>상행 교통량</h4>
                     </div>
                     <strong className="chart-value" id="traffic-up">
-                      {status.traffic_up}
+                      {viewStatus.traffic_up}
                     </strong>
                   </div>
                   <canvas
@@ -237,7 +202,7 @@ export default function HomePage() {
                   <h3>사고 발생 확률</h3>
                 </div>
                 <div className="probability-badge" id="accident-status">
-                  {status.accident_status}
+                  {viewStatus.accident_status}
                 </div>
               </div>
 
@@ -246,7 +211,7 @@ export default function HomePage() {
                   <p className="metric-note">교통량 기반 추정치</p>
                   <div className="probability-value">
                     <strong id="accident-probability">
-                      {status.accident_probability}
+                      {viewStatus.accident_probability}
                     </strong>
                     <span>%</span>
                   </div>
@@ -254,7 +219,7 @@ export default function HomePage() {
                     <div
                       className="probability-fill"
                       id="accident-probability-fill"
-                      style={{ width: `${status.accident_probability}%` }}
+                      style={{ width: `${viewStatus.accident_probability}%` }}
                     />
                   </div>
                 </div>
@@ -279,18 +244,18 @@ export default function HomePage() {
           </div>
           <div className="list-card">
             <div className="cctv-list" id="cctv-list">
-              {CCTV_ITEMS.map((name, index) => (
+              {cctvs.map((cctv) => (
                 <button
-                  className={`cctv-item ${index === selectedIndex ? "is-active" : ""}`}
-                  data-index={index}
-                  key={name}
-                  onClick={() => setSelectedIndex(index)}
+                  className={`cctv-item ${cctv.selected ? "is-active" : ""}`}
+                  data-index={cctv.index}
+                  key={`${cctv.index}-${cctv.name}`}
+                  onClick={() => selectCctv(cctv.index)}
                   type="button"
                 >
                   <span className="cctv-index">
-                    {String(index + 1).padStart(3, "0")}
+                    {String(cctv.index + 1).padStart(3, "0")}
                   </span>
-                  <span className="cctv-name">{name}</span>
+                  <span className="cctv-name">{cctv.name}</span>
                 </button>
               ))}
             </div>
@@ -301,35 +266,110 @@ export default function HomePage() {
   );
 }
 
-function DetectionScreen({ detection, loading, error }) {
-  const label = detection
-    ? `${detection.class_name} ${Number(detection.confidence).toFixed(2)}`
-    : loading
-      ? "loading..."
-      : error || "No detection data";
+function CctvVideoPlayer({ src, fallbackSrc }) {
+  const videoRef = useRef(null);
+  const [canUseVideo, setCanUseVideo] = useState(Boolean(src));
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !src) return undefined;
+
+    setCanUseVideo(true);
+    let hls;
+    let destroyed = false;
+
+    async function attachSource() {
+      if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = src;
+        return;
+      }
+
+      const Hls = await loadHls();
+      if (destroyed) return;
+
+      if (Hls?.isSupported()) {
+        hls = new Hls();
+        hls.loadSource(src);
+        hls.attachMedia(video);
+      } else {
+        video.src = src;
+      }
+    }
+
+    attachSource().catch(() => setCanUseVideo(false));
+
+    return () => {
+      destroyed = true;
+      if (hls) hls.destroy();
+    };
+  }, [src]);
+
+  if (!src && fallbackSrc) {
+    return <img id="video-feed" src={fallbackSrc} alt="CCTV detection feed" />;
+  }
 
   return (
-    <div className="video-placeholder" id="video-feed" aria-label="CCTV detection feed">
-      <div className="video-placeholder-title">Detection Screen</div>
-      <div className="video-placeholder-message">{label}</div>
-      {detection && (
-        <>
-          <div className="demo-bbox">
-            <span>{label}</span>
-          </div>
-          <div className="demo-readout">
-            <strong>{detection.class_name}</strong>
-            <span>bbox: {JSON.stringify(detection.bbox)}</span>
-            <span>{detection.timestamp}</span>
-          </div>
-        </>
+    <div className="video-player-wrap">
+      {canUseVideo ? (
+        <video
+          id="video-feed"
+          ref={videoRef}
+          autoPlay
+          controls
+          muted
+          playsInline
+          onError={() => setCanUseVideo(false)}
+        />
+      ) : fallbackSrc ? (
+        <img id="video-feed" src={fallbackSrc} alt="CCTV detection feed" />
+      ) : (
+        <div className="video-placeholder" id="video-feed">
+          CCTV 영상 URL을 불러오지 못했습니다.
+        </div>
       )}
     </div>
   );
 }
 
-function appendHistory(values, nextValue) {
-  return [...values.slice(-35), nextValue];
+function buildEmptyStatus(loading, error) {
+  return {
+    selected_name: "-",
+    stream_status: error ? "연결 오류" : loading ? "준비 중" : "대기 중",
+    traffic_count: 0,
+    traffic_up: 0,
+    traffic_down: 0,
+    traffic_up_history: [0],
+    traffic_down_history: [0],
+    accident_probability: 0,
+    accident_probability_history: [0],
+    accident_status: "-",
+    yolo_enabled: false,
+    roi_path: API_URL || "NEXT_PUBLIC_API_URL is not set",
+    player_url: "",
+    cctv_url: "",
+    stream_url: "",
+  };
+}
+
+function loadHls() {
+  if (window.Hls) return Promise.resolve(window.Hls);
+
+  return new Promise((resolve, reject) => {
+    const existingScript = document.querySelector("script[data-hls-js]");
+    if (existingScript) {
+      existingScript.addEventListener("load", () => resolve(window.Hls), { once: true });
+      existingScript.addEventListener("error", reject, { once: true });
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/hls.js@latest";
+    script.async = true;
+    script.dataset.hlsJs = "true";
+    script.onload = () => resolve(window.Hls);
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
 }
 
 function fitCanvas(canvas) {
@@ -375,11 +415,8 @@ function drawLineChart(canvas, values, options) {
   points.forEach((value, index) => {
     const x = padding.left + (innerWidth * index) / Math.max(1, points.length - 1);
     const y = padding.top + innerHeight - (Math.min(value, maxValue) / maxValue) * innerHeight;
-    if (index === 0) {
-      ctx.moveTo(x, y);
-    } else {
-      ctx.lineTo(x, y);
-    }
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
   });
   ctx.lineTo(width - padding.right, height - padding.bottom);
   ctx.lineTo(padding.left, height - padding.bottom);
@@ -391,11 +428,8 @@ function drawLineChart(canvas, values, options) {
   points.forEach((value, index) => {
     const x = padding.left + (innerWidth * index) / Math.max(1, points.length - 1);
     const y = padding.top + innerHeight - (Math.min(value, maxValue) / maxValue) * innerHeight;
-    if (index === 0) {
-      ctx.moveTo(x, y);
-    } else {
-      ctx.lineTo(x, y);
-    }
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
   });
   ctx.strokeStyle = options.lineColor;
   ctx.lineWidth = 3;

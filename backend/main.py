@@ -1,7 +1,10 @@
 import html
+import json
 import os
 from collections import deque
 from datetime import datetime, timezone
+from urllib.parse import urlencode, urljoin
+from urllib.request import urlopen
 
 from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
@@ -43,6 +46,21 @@ CCTV_ITEMS = [
     "[경부선] 강서",
 ]
 
+ITS_API_KEY = "f742615880e442b4a0e549771bbef99d"
+ITS_API_URL = "https://openapi.its.go.kr:9443/cctvInfo"
+REQUEST_PARAMS = {
+    "apiKey": ITS_API_KEY,
+    "type": "all",
+    "cctvType": "1",
+    "minX": 127.25,
+    "maxX": 127.60,
+    "minY": 36.50,
+    "maxY": 36.80,
+    "getType": "json",
+}
+
+cctv_records = []
+
 
 def _calculate_metrics(detection):
     if not detection:
@@ -77,21 +95,26 @@ def _append_metric_history(metrics):
 
 
 def _get_cctv_items():
+    _ensure_cctv_records()
     return [
         {
             "index": index,
-            "name": name,
+            "name": item["name"],
             "selected": index == selected_index,
+            "cctv_url": item.get("cctv_url", ""),
+            "stream_url": item.get("stream_url", ""),
         }
-        for index, name in enumerate(CCTV_ITEMS)
+        for index, item in enumerate(cctv_records)
     ]
 
 
 def _get_status():
+    _ensure_cctv_records()
     metrics = _calculate_metrics(latest_detection)
+    selected_cctv = cctv_records[selected_index]
     return {
         "selected_index": selected_index,
-        "selected_name": CCTV_ITEMS[selected_index],
+        "selected_name": selected_cctv["name"],
         "traffic_count": metrics["traffic_count"],
         "traffic_up": metrics["traffic_up"],
         "traffic_down": metrics["traffic_down"],
@@ -101,8 +124,10 @@ def _get_status():
         "accident_probability_history": list(accident_probability_history),
         "accident_status": metrics["accident_status"],
         "stream_status": "연결됨" if latest_detection else "준비 중",
-        "player_url": "/video_feed",
-        "cctv_count": len(CCTV_ITEMS),
+        "player_url": selected_cctv.get("stream_url") or selected_cctv.get("cctv_url") or "/video_feed",
+        "cctv_url": selected_cctv.get("cctv_url", ""),
+        "stream_url": selected_cctv.get("stream_url", ""),
+        "cctv_count": len(cctv_records),
         "yolo_enabled": latest_detection is not None,
         "roi_enabled": False,
         "roi_path": "Railway remote demo backend",
@@ -110,8 +135,93 @@ def _get_status():
     }
 
 
+def _fallback_cctv_records():
+    return [
+        {
+            "name": name,
+            "cctv_url": "",
+            "stream_url": "",
+        }
+        for name in CCTV_ITEMS
+    ]
+
+
+def _resolve_stream_url(cctv_url):
+    if not cctv_url:
+        return ""
+
+    try:
+        with urlopen(cctv_url, timeout=8) as response:
+            playlist_url = response.geturl()
+            playlist_text = response.read().decode("utf-8", errors="replace")
+    except Exception:
+        return cctv_url
+
+    for line in playlist_text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            return urljoin(playlist_url, line)
+
+    return cctv_url
+
+
+def _fetch_cctv_records():
+    query = urlencode(REQUEST_PARAMS)
+    with urlopen(f"{ITS_API_URL}?{query}", timeout=10) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+
+    data = payload.get("response", {}).get("data", [])
+    if not data:
+        raise RuntimeError("CCTV 목록을 불러오지 못했습니다.")
+
+    fetched_items = []
+    for row in data:
+        name = str(row.get("cctvname", "")).strip()
+        if name not in CCTV_ITEMS:
+            continue
+        cctv_url = str(row.get("cctvurl", "")).strip()
+        fetched_items.append(
+            {
+                "name": name,
+                "cctv_url": cctv_url,
+                "stream_url": _resolve_stream_url(cctv_url),
+            }
+        )
+
+    by_name = {item["name"]: item for item in fetched_items}
+    ordered_items = []
+    for name in CCTV_ITEMS:
+        ordered_items.append(
+            by_name.get(
+                name,
+                {
+                    "name": name,
+                    "cctv_url": "",
+                    "stream_url": "",
+                },
+            )
+        )
+
+    return ordered_items
+
+
+def _ensure_cctv_records():
+    global cctv_records
+
+    if cctv_records:
+        return
+
+    try:
+        cctv_records = _fetch_cctv_records()
+    except Exception:
+        cctv_records = _fallback_cctv_records()
+
+
 def _build_svg_frame():
     metrics = _calculate_metrics(latest_detection)
+    _ensure_cctv_records()
+    cctv_name = html.escape(cctv_records[selected_index]["name"])
+    road_label = html.escape(f"CCTV {selected_index + 1:03d}")
     if latest_detection:
         class_name = html.escape(str(latest_detection.get("class_name", "-")))
         confidence = float(latest_detection.get("confidence", 0) or 0)
@@ -129,9 +239,20 @@ def _build_svg_frame():
     <pattern id="grid" width="42" height="42" patternUnits="userSpaceOnUse">
       <path d="M 42 0 L 0 0 0 42" fill="none" stroke="rgba(93,163,255,0.16)" stroke-width="1"/>
     </pattern>
+    <linearGradient id="road" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#1f2c3d"/>
+      <stop offset="100%" stop-color="#0b111a"/>
+    </linearGradient>
   </defs>
   <rect width="960" height="540" fill="#121822"/>
   <rect width="960" height="540" fill="url(#grid)"/>
+  <polygon points="190,540 405,130 555,130 770,540" fill="url(#road)" stroke="#2d3b52" stroke-width="3"/>
+  <line x1="480" y1="150" x2="480" y2="520" stroke="#d7dee8" stroke-width="8" stroke-dasharray="34 28" opacity="0.72"/>
+  <line x1="345" y1="178" x2="245" y2="540" stroke="#f1c84b" stroke-width="4" opacity="0.86"/>
+  <line x1="615" y1="178" x2="715" y2="540" stroke="#f1c84b" stroke-width="4" opacity="0.86"/>
+  <rect x="630" y="72" width="238" height="86" rx="14" fill="rgba(18,24,34,0.78)" stroke="rgba(94,110,138,0.8)"/>
+  <text x="650" y="106" fill="#8ebeff" font-family="Arial, sans-serif" font-size="18" font-weight="700">{road_label}</text>
+  <text x="650" y="134" fill="#eef3f8" font-family="Arial, sans-serif" font-size="18" font-weight="700">{cctv_name}</text>
   <rect x="22" y="22" width="916" height="496" fill="none" stroke="#3e4e68" stroke-width="2"/>
   <text x="28" y="54" fill="#eef3f8" font-family="Arial, sans-serif" font-size="28" font-weight="700">Detection Screen</text>
   <text x="28" y="104" fill="#78b6ff" font-family="Arial, sans-serif" font-size="24" font-weight="700">{label}</text>
@@ -222,7 +343,8 @@ def api_cctvs():
 def api_select(index):
     global selected_index
 
-    if index < 0 or index >= len(CCTV_ITEMS):
+    _ensure_cctv_records()
+    if index < 0 or index >= len(cctv_records):
         return jsonify({"ok": False, "error": "Invalid CCTV index"}), 400
 
     selected_index = index

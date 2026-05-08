@@ -112,6 +112,10 @@ body {
   position: relative;
 }
 
+.video-player-wrap {
+  width: 100%;
+}
+
 .video-card video,
 .video-card img {
   display: block;
@@ -134,6 +138,11 @@ body {
     #121822;
   background-size: 42px 42px, 42px 42px, auto;
   border-radius: 14px;
+  color: var(--muted);
+  display: grid;
+  font-weight: 700;
+  place-items: center;
+  text-align: center;
 }
 
 .video-placeholder::after {
