@@ -59,6 +59,29 @@ REQUEST_PARAMS = {
     "getType": "json",
 }
 
+STATIC_CCTV_RECORDS = [
+    {"name": "[경부선] 천안호두휴게소", "cctv_url": "http://cctvsec.ktict.co.kr/120/iyt5f0iWzZUAEom6Bu/3dOte5b02QQcoqrbPROBbsAiFh+nz0Jk5dsU9xqIC0ctRBU8P6LbbJEVdzAfE0OYTJ7Ji6Weax06T0JD4PZOgIx8=", "stream_url": "http://cctvsec.ktict.co.kr/120/iyt5f0iWzZUAEom6Bu/3dOte5b02QQcoqrbPROBbsAiFh+nz0Jk5dsU9xqIC0ctRBU8P6LbbJEVdzAfE0OYTJ7Ji6Weax06T0JD4PZOgIx8="},
+    {"name": "[경부선] 옥산휴게소", "cctv_url": "http://cctvsec.ktict.co.kr/121/3qLDgHP5JKiFW+5qGqsmODGy/yObDZgbR0RICpPs+6kUZ4WTh1GuYZFwG9rPnbm7QWrIhMCG7ilSLpdGyRdgKM2oz6ItQanIvn03eURPLU4=", "stream_url": "http://cctvsec.ktict.co.kr/121/3qLDgHP5JKiFW+5qGqsmODGy/yObDZgbR0RICpPs+6kUZ4WTh1GuYZFwG9rPnbm7QWrIhMCG7ilSLpdGyRdgKM2oz6ItQanIvn03eURPLU4="},
+    {"name": "[경부선] 남청주육교", "cctv_url": "http://cctvsec.ktict.co.kr/310/S1n/NEg0kGqXoV9XcGjZy7o+QvVlz/X9/fCFd0Mj3hhygsWMPSOsNDRGCu9zO2Wnw939zIoRCLLfEB62cFmaEtkwF4FTLLRlk0o39iUH7/8=", "stream_url": "http://cctvsec.ktict.co.kr/310/S1n/NEg0kGqXoV9XcGjZy7o+QvVlz/X9/fCFd0Mj3hhygsWMPSOsNDRGCu9zO2Wnw939zIoRCLLfEB62cFmaEtkwF4FTLLRlk0o39iUH7/8="},
+    {"name": "[경부선] 청주분기점(고정)", "cctv_url": "http://cctvsec.ktict.co.kr/311/3Q8ZOSfaL8LYN2pnttCv923Iz14D0m/HWz/zyY2HIzfUESa9xpWU/x+1IEBoZ4nhNcXateaKLMrUkxYwzmy60tybhIV5zs6FGi/zIYRwnss=", "stream_url": "http://cctvsec.ktict.co.kr/311/3Q8ZOSfaL8LYN2pnttCv923Iz14D0m/HWz/zyY2HIzfUESa9xpWU/x+1IEBoZ4nhNcXateaKLMrUkxYwzmy60tybhIV5zs6FGi/zIYRwnss="},
+    {"name": "[경부선] 가마육교", "cctv_url": "http://cctvsec.ktict.co.kr/312/+hs6k7Ze+TQeBYmTvWYi63kyMEwkTIrvaRusq7usuwgk2CaJuBxUidV5BwbZdx0bUgBnwWz+0Z3Xc9rawyvNAjwc6QQkvF+IfpT4ZLbBvWU=", "stream_url": "http://cctvsec.ktict.co.kr/312/+hs6k7Ze+TQeBYmTvWYi63kyMEwkTIrvaRusq7usuwgk2CaJuBxUidV5BwbZdx0bUgBnwWz+0Z3Xc9rawyvNAjwc6QQkvF+IfpT4ZLbBvWU="},
+    {"name": "[경부선] 금계", "cctv_url": "http://cctvsec.ktict.co.kr/313/2Ag3W45ctZGKlrS+4aI87WecsvsKubZiz45yCkrYmwWi2V3xyCdqfUaqWdQ32PRpgiQJ3Lfjlkr9kg5bHWZb1PrMzNwGx/Ie86j4jON3gg4=", "stream_url": "http://cctvsec.ktict.co.kr/313/2Ag3W45ctZGKlrS+4aI87WecsvsKubZiz45yCkrYmwWi2V3xyCdqfUaqWdQ32PRpgiQJ3Lfjlkr9kg5bHWZb1PrMzNwGx/Ie86j4jON3gg4="},
+    {"name": "[청주영덕선] 문동1", "cctv_url": "http://cctvsec.ktict.co.kr/751/7HtK7txa+9qA20SPI4XnQYN8YJYCokuvn+ils5QpAyClxpSaHHL1W/nL4oZN3Q0yrj46LXkRww+xoiCz2Ke+0mT4iRu0Tib3NmR1Dd0mh70=", "stream_url": "http://cctvsec.ktict.co.kr/751/7HtK7txa+9qA20SPI4XnQYN8YJYCokuvn+ils5QpAyClxpSaHHL1W/nL4oZN3Q0yrj46LXkRww+xoiCz2Ke+0mT4iRu0Tib3NmR1Dd0mh70="},
+    {"name": "[청주영덕선] 청주분기점", "cctv_url": "http://cctvsec.ktict.co.kr/2253/ZhJPe98qcMXjW2tx4Btv+sw0RWsYqT/i/y+TTNN8RjqAhGQqgaBC4+GW5pPzjt6LJvzFDOajS2ereDtgF8saaWcp29NhXYdK7/t7OHK0gYY=", "stream_url": "http://cctvsec.ktict.co.kr/2253/ZhJPe98qcMXjW2tx4Btv+sw0RWsYqT/i/y+TTNN8RjqAhGQqgaBC4+GW5pPzjt6LJvzFDOajS2ereDtgF8saaWcp29NhXYdK7/t7OHK0gYY="},
+    {"name": "[청주영덕선] 문동2", "cctv_url": "http://cctvsec.ktict.co.kr/2254/ji9rFW37SW3CkXSswIC2jJdgi5HNuQ4Xld9NfBJMo6PwylbTHxKItvEaBnEbWfBJGCeS1ZWgWuLH7K6lbyIU88yM50RDpIi0I+E7z0Ggj/0=", "stream_url": "http://cctvsec.ktict.co.kr/2254/ji9rFW37SW3CkXSswIC2jJdgi5HNuQ4Xld9NfBJMo6PwylbTHxKItvEaBnEbWfBJGCeS1ZWgWuLH7K6lbyIU88yM50RDpIi0I+E7z0Ggj/0="},
+    {"name": "[청주영덕선] 문의청남대휴게소2", "cctv_url": "http://cctvsec.ktict.co.kr/2255/np7OdQhpSvr7FHjnjiy9Du8FQKaywlJOKqO1DwUirnLPcUVRRtgjuxZtxPb2O8CgqTe1+7YpSInKw4APc2S6e1hr6DZLOhYtiC2cynXrnSs=", "stream_url": "http://cctvsec.ktict.co.kr/2255/np7OdQhpSvr7FHjnjiy9Du8FQKaywlJOKqO1DwUirnLPcUVRRtgjuxZtxPb2O8CgqTe1+7YpSInKw4APc2S6e1hr6DZLOhYtiC2cynXrnSs="},
+    {"name": "[중부선] 증평2", "cctv_url": "http://cctvsec.ktict.co.kr/2303/kweiHRznXl/5NeH7upViqU/V/YqW3/SLsUrfl0KXVygBHQkxu/gEIBHaKA7Jr7MCBPXjr2WVMzIoZ9R0LgULyabDxY7PtW2XxaC2CL63C9k=", "stream_url": "http://cctvsec.ktict.co.kr/2303/kweiHRznXl/5NeH7upViqU/V/YqW3/SLsUrfl0KXVygBHQkxu/gEIBHaKA7Jr7MCBPXjr2WVMzIoZ9R0LgULyabDxY7PtW2XxaC2CL63C9k="},
+    {"name": "[중부선] 오창", "cctv_url": "", "stream_url": ""},
+    {"name": "[중부선] 서청주", "cctv_url": "http://cctvsec.ktict.co.kr/2305/lebRQVPP6UkAj3BBbkzFWIPLvOkdD4OYVcxMCKX4nkgHZgCH2l3ui6ckE31fA4VUqLtT3jcCJ4fyo0qAhHE8uaNTt6kUlBXwgy+zkxUmsos=", "stream_url": "http://cctvsec.ktict.co.kr/2305/lebRQVPP6UkAj3BBbkzFWIPLvOkdD4OYVcxMCKX4nkgHZgCH2l3ui6ckE31fA4VUqLtT3jcCJ4fyo0qAhHE8uaNTt6kUlBXwgy+zkxUmsos="},
+    {"name": "[경부선] 남이분기점", "cctv_url": "http://cctvsec.ktict.co.kr/2306/0phM00zQh9LTB3jY8TvxBQ7iXDvoFburflc7JdDgdRz4M588biiDVHiilWFtiSB7a5FS9OAcZVXgTpibSNGxYabN00G8VBGtBstXZFZhLUE=", "stream_url": "http://cctvsec.ktict.co.kr/2306/0phM00zQh9LTB3jY8TvxBQ7iXDvoFburflc7JdDgdRz4M588biiDVHiilWFtiSB7a5FS9OAcZVXgTpibSNGxYabN00G8VBGtBstXZFZhLUE="},
+    {"name": "[경부선] 속창육교", "cctv_url": "http://cctvsec.ktict.co.kr/2415/fbFA4wmrtgdAm/A+CjB79nGGjPKaDkligUuwfQE0BO3IIQmirgHCUxsktUYwGiwM5mjWXxI+X0YGja7NzoO7ixeoBu3Ds+hJoixsHuuh0LQ=", "stream_url": "http://cctvsec.ktict.co.kr/2415/fbFA4wmrtgdAm/A+CjB79nGGjPKaDkligUuwfQE0BO3IIQmirgHCUxsktUYwGiwM5mjWXxI+X0YGja7NzoO7ixeoBu3Ds+hJoixsHuuh0LQ="},
+    {"name": "[경부선] 몽단이고개", "cctv_url": "http://cctvsec.ktict.co.kr/2424/WUYyNi4R6FVMVCoZ/dX+3XOBiqRjpvukIXvlP5yz1Yo2j9QJG3UFYPrgmuVRbZiwgtxscXmPJCHzLxgrUfbCD1umd35p7t7w0Pjmk+nvYbI=", "stream_url": "http://cctvsec.ktict.co.kr/2424/WUYyNi4R6FVMVCoZ/dX+3XOBiqRjpvukIXvlP5yz1Yo2j9QJG3UFYPrgmuVRbZiwgtxscXmPJCHzLxgrUfbCD1umd35p7t7w0Pjmk+nvYbI="},
+    {"name": "[경부선] 수의", "cctv_url": "http://cctvsec.ktict.co.kr/2449/Tu5z2Vh3ZvLV31l9Go+HuaEFStd1HwbtQYW5x1l+tek74Dy+htYPq8M5UxTC3qDGMjXxBEzZ8Frk2aJ7/h60SzXt8qtMpNEe7Q8r5srNXoE=", "stream_url": "http://cctvsec.ktict.co.kr/2449/Tu5z2Vh3ZvLV31l9Go+HuaEFStd1HwbtQYW5x1l+tek74Dy+htYPq8M5UxTC3qDGMjXxBEzZ8Frk2aJ7/h60SzXt8qtMpNEe7Q8r5srNXoE="},
+    {"name": "[경부선] 죽암교", "cctv_url": "http://cctvsec.ktict.co.kr/2451/Pc6qy7eLL4ABxLJn2bX1www8UoR6h0nAJtsquTi6TgRdJIzl43ZQMOlcWnyW9YrlW63bp8P1G7edj9ftLHXOcH+46shEliXtB2IlLn7hemk=", "stream_url": "http://cctvsec.ktict.co.kr/2451/Pc6qy7eLL4ABxLJn2bX1www8UoR6h0nAJtsquTi6TgRdJIzl43ZQMOlcWnyW9YrlW63bp8P1G7edj9ftLHXOcH+46shEliXtB2IlLn7hemk="},
+    {"name": "[경부선] 옥산분기점", "cctv_url": "http://cctvsec.ktict.co.kr/2456/GfdjKwRUHCYwgLhu1h4tg2o9+m0r14bSk8qQuv+Grqj10fjiiPimQL6cf9lHebkdxpEJ9+Eodto36a1r1iuWiz1x9/qwMM7HKs13GJX3/YI=", "stream_url": "http://cctvsec.ktict.co.kr/2456/GfdjKwRUHCYwgLhu1h4tg2o9+m0r14bSk8qQuv+Grqj10fjiiPimQL6cf9lHebkdxpEJ9+Eodto36a1r1iuWiz1x9/qwMM7HKs13GJX3/YI="},
+    {"name": "[경부선] 강서", "cctv_url": "http://cctvsec.ktict.co.kr/2460/Frjx7lMHEU/cTpAqhZTL8sAJSSYYuc2h1sQV2sJZwmTBW2LYbareFBOefUT2DURjKtkAAO8VF7hvs5hSn7AOTK5bTltZS3oOiVNVA0f7Q5w=", "stream_url": "http://cctvsec.ktict.co.kr/2460/Frjx7lMHEU/cTpAqhZTL8sAJSSYYuc2h1sQV2sJZwmTBW2LYbareFBOefUT2DURjKtkAAO8VF7hvs5hSn7AOTK5bTltZS3oOiVNVA0f7Q5w="},
+]
+
 cctv_records = []
 cctv_records_source = "not_loaded"
 cctv_records_error = ""
@@ -140,14 +163,7 @@ def _get_status():
 
 
 def _fallback_cctv_records():
-    return [
-        {
-            "name": name,
-            "cctv_url": "",
-            "stream_url": "",
-        }
-        for name in CCTV_ITEMS
-    ]
+    return [dict(item) for item in STATIC_CCTV_RECORDS]
 
 
 def _resolve_stream_url(cctv_url):
