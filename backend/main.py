@@ -60,6 +60,8 @@ REQUEST_PARAMS = {
 }
 
 cctv_records = []
+cctv_records_source = "not_loaded"
+cctv_records_error = ""
 
 
 def _calculate_metrics(detection):
@@ -127,6 +129,8 @@ def _get_status():
         "player_url": selected_cctv.get("stream_url") or selected_cctv.get("cctv_url") or "/video_feed",
         "cctv_url": selected_cctv.get("cctv_url", ""),
         "stream_url": selected_cctv.get("stream_url", ""),
+        "cctv_source": cctv_records_source,
+        "cctv_error": cctv_records_error,
         "cctv_count": len(cctv_records),
         "yolo_enabled": latest_detection is not None,
         "roi_enabled": False,
@@ -177,8 +181,6 @@ def _fetch_cctv_records():
     fetched_items = []
     for row in data:
         name = str(row.get("cctvname", "")).strip()
-        if name not in CCTV_ITEMS:
-            continue
         cctv_url = str(row.get("cctvurl", "")).strip()
         fetched_items.append(
             {
@@ -202,19 +204,27 @@ def _fetch_cctv_records():
             )
         )
 
+    if not any(item.get("cctv_url") for item in ordered_items):
+        # Keep the UI usable even if names from the public API changed slightly.
+        return fetched_items[: len(CCTV_ITEMS)]
+
     return ordered_items
 
 
 def _ensure_cctv_records():
-    global cctv_records
+    global cctv_records, cctv_records_error, cctv_records_source
 
     if cctv_records:
         return
 
     try:
         cctv_records = _fetch_cctv_records()
-    except Exception:
+        cctv_records_source = "its_api"
+        cctv_records_error = ""
+    except Exception as exc:
         cctv_records = _fallback_cctv_records()
+        cctv_records_source = "fallback"
+        cctv_records_error = f"{type(exc).__name__}: {exc}"
 
 
 def _build_svg_frame():
@@ -336,7 +346,33 @@ def api_status():
 
 @app.route("/api/cctvs", methods=["GET"])
 def api_cctvs():
-    return jsonify({"items": _get_cctv_items()})
+    _ensure_cctv_records()
+    return jsonify(
+        {
+            "items": _get_cctv_items(),
+            "source": cctv_records_source,
+            "error": cctv_records_error,
+        }
+    )
+
+
+@app.route("/api/reload-cctvs", methods=["POST"])
+def api_reload_cctvs():
+    global cctv_records, cctv_records_error, cctv_records_source, selected_index
+
+    cctv_records = []
+    cctv_records_source = "not_loaded"
+    cctv_records_error = ""
+    selected_index = 0
+    _ensure_cctv_records()
+    return jsonify(
+        {
+            "ok": cctv_records_source == "its_api",
+            "source": cctv_records_source,
+            "error": cctv_records_error,
+            "items": _get_cctv_items(),
+        }
+    )
 
 
 @app.route("/api/select/<int:index>", methods=["POST"])
