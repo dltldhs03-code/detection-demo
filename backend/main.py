@@ -422,7 +422,8 @@ def _fetch_url_text(url, timeout=12):
 
 def _is_allowed_cctv_url(url):
     parsed = urlparse(url)
-    return parsed.scheme in {"http", "https"} and parsed.netloc.endswith("ktict.co.kr")
+    hostname = parsed.hostname or ""
+    return parsed.scheme in {"http", "https"} and hostname.endswith("ktict.co.kr")
 
 
 def _proxy_segment_url(url):
@@ -470,8 +471,33 @@ def api_stream_segment():
         with urlopen(source_url, timeout=12) as upstream:
             data = upstream.read()
             content_type = upstream.headers.get("Content-Type") or "application/octet-stream"
+            final_url = upstream.geturl()
     except Exception as exc:
         return Response(f"Failed to fetch CCTV segment: {exc}", status=502)
+
+    is_playlist = (
+        source_url.endswith(".m3u8")
+        or "mpegurl" in content_type.lower()
+        or data.startswith(b"#EXTM3U")
+    )
+    if is_playlist:
+        playlist_text = data.decode("utf-8", errors="replace")
+        rewritten_lines = []
+        for line in playlist_text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                rewritten_lines.append(line)
+                continue
+
+            absolute_url = urljoin(final_url, stripped)
+            rewritten_lines.append(_proxy_segment_url(absolute_url))
+
+        response = Response(
+            "\n".join(rewritten_lines),
+            mimetype="application/vnd.apple.mpegurl",
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     response = Response(data, mimetype=content_type)
     response.headers["Cache-Control"] = "no-store"
