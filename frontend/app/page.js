@@ -18,6 +18,7 @@ export default function HomePage() {
   const trafficUpChartRef = useRef(null);
   const trafficDownChartRef = useRef(null);
   const accidentProbabilityChartRef = useRef(null);
+  const frameImgRef = useRef(null);
   const wsRef = useRef(null);
   const wsConnectedRef = useRef(false);
   const shouldReconnectRef = useRef(true);
@@ -145,10 +146,16 @@ export default function HomePage() {
           if (sequence && sequence < lastFrameSequenceRef.current) return;
           if (sequence) lastFrameSequenceRef.current = sequence;
 
-          if (message.image_base64) {
-            setFrameSrc(`data:${message.image_mime || "image/jpeg"};base64,${message.image_base64}`);
+          const { image_base64: imageBase64, ...statusMessage } = message;
+          if (imageBase64) {
+            const nextFrameSrc = `data:${message.image_mime || "image/jpeg"};base64,${imageBase64}`;
+            if (frameImgRef.current) {
+              frameImgRef.current.src = nextFrameSrc;
+            } else {
+              setFrameSrc(nextFrameSrc);
+            }
           }
-          setStatus((previous) => ({ ...(previous || {}), ...message }));
+          setStatus((previous) => ({ ...(previous || {}), ...statusMessage }));
           setLoading(false);
           setError("");
         } catch (err) {
@@ -242,6 +249,7 @@ export default function HomePage() {
           <div className="video-card">
             <LatestFrame
               frameSrc={frameUrl || (API_URL ? `${API_URL}/video_feed` : "")}
+              imageRef={frameImgRef}
               isWaiting={!viewStatus.yolo_enabled}
             />
           </div>
@@ -389,11 +397,12 @@ function formatWsState(state) {
   return "fallback";
 }
 
-function LatestFrame({ frameSrc, isWaiting }) {
+function LatestFrame({ frameSrc, imageRef, isWaiting }) {
   return (
     <div className="frame-player-wrap">
       <img
         id="video-feed"
+        ref={imageRef}
         src={frameSrc}
         alt={isWaiting ? "Waiting for YOLO detection frame" : "Live YOLO detection frame"}
       />

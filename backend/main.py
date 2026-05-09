@@ -184,17 +184,57 @@ def _get_status():
     }
 
 
+def _get_hot_selected_name(detection):
+    remote_selected_name = (detection or {}).get("selected_name")
+    if remote_selected_name:
+        return remote_selected_name
+
+    remote_selected_index = (detection or {}).get("selected_index")
+    try:
+        index = int(remote_selected_index if remote_selected_index is not None else selected_index)
+        records = cctv_records or STATIC_CCTV_RECORDS
+        if 0 <= index < len(records):
+            return records[index]["name"]
+    except Exception:
+        pass
+
+    return "-"
+
+
 def _get_viewer_message(include_image=True):
-    status = _get_status()
-    payload = {
-        **status,
+    # Keep the WebSocket hot path independent from slow external CCTV API fetches.
+    detection = latest_detection or {}
+    metrics = _calculate_metrics(detection)
+    frame_url = _latest_frame_url()
+    return {
         "type": "frame",
+        "selected_index": detection.get("selected_index", selected_index),
+        "selected_name": _get_hot_selected_name(detection),
+        "traffic_count": metrics["traffic_count"],
+        "traffic_up": metrics["traffic_up"],
+        "traffic_down": metrics["traffic_down"],
+        "traffic_up_history": list(traffic_up_history),
+        "traffic_down_history": list(traffic_down_history),
+        "accident_probability": metrics["accident_probability"],
+        "accident_probability_history": list(accident_probability_history),
+        "accident_status": metrics["accident_status"],
+        "stream_status": detection.get("stream_status") or ("연결됨" if latest_detection else "준비 중"),
+        "player_url": frame_url or "/video_feed",
+        "cctv_url": "",
+        "stream_url": "",
+        "cctv_source": cctv_records_source,
+        "cctv_error": cctv_records_error,
+        "cctv_count": len(cctv_records) or len(STATIC_CCTV_RECORDS),
+        "yolo_enabled": latest_detection is not None,
+        "roi_enabled": bool(detection.get("roi_enabled")),
+        "roi_path": detection.get("roi_path") or "Railway remote demo backend",
+        "latest_detection": latest_detection,
+        "frame_url": frame_url,
         "image_mime": latest_frame_mime,
         "image_base64": latest_frame_base64 if include_image else "",
         "frame_sequence": latest_frame_sequence,
-        "timestamp": (latest_detection or {}).get("timestamp"),
+        "timestamp": detection.get("timestamp"),
     }
-    return payload
 
 
 def _latest_frame_url():
