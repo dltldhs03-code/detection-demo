@@ -2,6 +2,7 @@ import html
 import json
 import os
 import base64
+import threading
 from collections import deque
 from datetime import datetime, timezone
 from urllib.parse import quote, urlencode, urljoin
@@ -9,17 +10,24 @@ from urllib.request import urlopen
 
 from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
+from flask_sock import Sock
 
 
 app = Flask(__name__)
 CORS(app)
+sock = Sock(app)
 
 # This Railway demo keeps state in memory.
 # If Railway restarts the service, these values are reset.
 latest_detection = None
 latest_frame_bytes = None
 latest_frame_mime = "image/jpeg"
+latest_frame_base64 = ""
+latest_frame_sequence = 0
 selected_index = 0
+state_lock = threading.Lock()
+viewer_sockets = set()
+viewer_sockets_lock = threading.Lock()
 
 HISTORY_LIMIT = 36
 traffic_up_history = deque([0], maxlen=HISTORY_LIMIT)
@@ -176,6 +184,19 @@ def _get_status():
     }
 
 
+def _get_viewer_message(include_image=True):
+    status = _get_status()
+    payload = {
+        **status,
+        "type": "frame",
+        "image_mime": latest_frame_mime,
+        "image_base64": latest_frame_base64 if include_image else "",
+        "frame_sequence": latest_frame_sequence,
+        "timestamp": (latest_detection or {}).get("timestamp"),
+    }
+    return payload
+
+
 def _latest_frame_url():
     if latest_frame_bytes is None or latest_detection is None:
         return ""
@@ -192,6 +213,18 @@ def _decode_base64_image(value):
         value = value.split(",", 1)[1]
 
     return base64.b64decode(value)
+
+
+def _strip_data_url(value):
+    if value and "," in value and value.strip().startswith("data:"):
+        return value.split(",", 1)[1]
+    return value or ""
+
+
+def _encode_base64_image(frame_bytes):
+    if not frame_bytes:
+        return ""
+    return base64.b64encode(frame_bytes).decode("ascii")
 
 
 def _parse_detection_payload():
@@ -226,6 +259,91 @@ def _parse_detections(value):
     if isinstance(value, str):
         return json.loads(value)
     return value
+
+
+def _truthy(value):
+    return str(value).lower() in {"1", "true", "yes"}
+
+
+def _update_latest_detection(data, frame_bytes=None, frame_mime="image/jpeg"):
+    global latest_detection, latest_frame_bytes, latest_frame_mime, latest_frame_base64
+    global latest_frame_sequence
+
+    detections = _parse_detections(data.get("detections"))
+    has_single_detection = all(field in data for field in ["class_name", "confidence", "bbox"])
+    if not detections and not has_single_detection:
+        raise ValueError("Send either detections or class_name/confidence/bbox")
+
+    if not detections:
+        detections = [
+            {
+                "class_name": data["class_name"],
+                "confidence": float(data["confidence"]),
+                "bbox": _parse_bbox(data["bbox"]),
+            }
+        ]
+
+    best_detection = max(
+        detections,
+        key=lambda item: float(item.get("confidence", 0) or 0),
+        default={"class_name": "none", "confidence": 0.0, "bbox": [0, 0, 0, 0]},
+    )
+    traffic_count = int(data.get("traffic_count") or len(detections))
+    timestamp = data.get("timestamp") or datetime.now(timezone.utc).isoformat()
+
+    latest_detection = {
+        "class_name": best_detection.get("class_name", "none"),
+        "confidence": float(best_detection.get("confidence", 0) or 0),
+        "bbox": best_detection.get("bbox", [0, 0, 0, 0]),
+        "detections": detections,
+        "detection_count": len(detections),
+        "traffic_count": traffic_count,
+        "selected_name": data.get("selected_name"),
+        "selected_index": data.get("selected_index"),
+        "stream_status": data.get("stream_status"),
+        "roi_enabled": _truthy(data.get("roi_enabled", "")),
+        "roi_path": data.get("roi_path"),
+        "timestamp": timestamp,
+    }
+
+    image_base64 = _strip_data_url(data.get("image_base64"))
+
+    if frame_bytes:
+        latest_frame_bytes = frame_bytes
+        latest_frame_mime = frame_mime or "image/jpeg"
+        latest_frame_base64 = image_base64 or _encode_base64_image(frame_bytes)
+    elif image_base64:
+        latest_frame_base64 = image_base64
+        latest_frame_mime = data.get("image_mime", "image/jpeg")
+        latest_frame_bytes = _decode_base64_image(latest_frame_base64)
+    else:
+        latest_frame_bytes = None
+        latest_frame_mime = "image/jpeg"
+        latest_frame_base64 = ""
+
+    latest_detection["frame_url"] = _latest_frame_url()
+    latest_frame_sequence += 1
+    _append_metric_history(_calculate_metrics(latest_detection))
+    return latest_detection
+
+
+def _broadcast_to_viewers(message):
+    dead_sockets = []
+    serialized = json.dumps(message, ensure_ascii=False)
+
+    with viewer_sockets_lock:
+        sockets = list(viewer_sockets)
+
+    for ws in sockets:
+        try:
+            ws.send(serialized)
+        except Exception:
+            dead_sockets.append(ws)
+
+    if dead_sockets:
+        with viewer_sockets_lock:
+            for ws in dead_sockets:
+                viewer_sockets.discard(ws)
 
 
 def _fallback_cctv_records():
@@ -373,6 +491,8 @@ def index():
                 "/api/cctvs",
                 "/api/select/<index>",
                 "/video_feed",
+                "/ws/sender",
+                "/ws/viewer",
             ],
         }
     )
@@ -385,65 +505,77 @@ def health():
 
 @app.route("/api/detection", methods=["POST"])
 def receive_detection():
-    global latest_detection, latest_frame_bytes, latest_frame_mime
-
     data, frame_bytes, frame_mime = _parse_detection_payload()
     if not data:
         return jsonify({"status": "error", "message": "JSON body is required"}), 400
 
-    detections = _parse_detections(data.get("detections"))
-    has_single_detection = all(field in data for field in ["class_name", "confidence", "bbox"])
-    if not detections and not has_single_detection:
-        return (
-            jsonify(
-                {
-                    "status": "error",
-                    "message": "Send either detections or class_name/confidence/bbox",
-                }
-            ),
-            400,
-        )
+    try:
+        with state_lock:
+            detection = _update_latest_detection(data, frame_bytes, frame_mime)
+            viewer_message = _get_viewer_message(include_image=True)
+    except ValueError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
 
-    if not detections:
-        detections = [
-            {
-                "class_name": data["class_name"],
-                "confidence": float(data["confidence"]),
-                "bbox": _parse_bbox(data["bbox"]),
-            }
-        ]
+    _broadcast_to_viewers(viewer_message)
 
-    best_detection = max(
-        detections,
-        key=lambda item: float(item.get("confidence", 0) or 0),
-        default={"class_name": "none", "confidence": 0.0, "bbox": [0, 0, 0, 0]},
-    )
-    traffic_count = int(data.get("traffic_count") or len(detections))
-    latest_detection = {
-        "class_name": best_detection.get("class_name", "none"),
-        "confidence": float(best_detection.get("confidence", 0) or 0),
-        "bbox": best_detection.get("bbox", [0, 0, 0, 0]),
-        "detections": detections,
-        "detection_count": len(detections),
-        "traffic_count": traffic_count,
-        "selected_name": data.get("selected_name"),
-        "selected_index": data.get("selected_index"),
-        "stream_status": data.get("stream_status"),
-        "roi_enabled": str(data.get("roi_enabled", "")).lower() in {"1", "true", "yes"},
-        "roi_path": data.get("roi_path"),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-    if frame_bytes:
-        latest_frame_bytes = frame_bytes
-        latest_frame_mime = frame_mime
-    else:
-        latest_frame_bytes = None
-        latest_frame_mime = "image/jpeg"
+    return jsonify({"status": "ok", "data": detection})
 
-    latest_detection["frame_url"] = _latest_frame_url()
-    _append_metric_history(_calculate_metrics(latest_detection))
 
-    return jsonify({"status": "ok", "data": latest_detection})
+@sock.route("/ws/sender")
+def ws_sender(ws):
+    while True:
+        try:
+            raw_message = ws.receive()
+            if raw_message is None:
+                break
+
+            data = json.loads(raw_message)
+            frame_bytes = None
+            frame_mime = data.get("image_mime", "image/jpeg")
+            if data.get("image_base64"):
+                frame_bytes = _decode_base64_image(data.get("image_base64"))
+
+            with state_lock:
+                _update_latest_detection(data, frame_bytes, frame_mime)
+                viewer_message = _get_viewer_message(include_image=True)
+
+            _broadcast_to_viewers(viewer_message)
+        except json.JSONDecodeError:
+            try:
+                ws.send(json.dumps({"status": "error", "message": "Invalid JSON"}))
+            except Exception:
+                break
+        except Exception as exc:
+            try:
+                ws.send(json.dumps({"status": "error", "message": str(exc)}))
+            except Exception:
+                break
+
+
+@sock.route("/ws/viewer")
+def ws_viewer(ws):
+    with viewer_sockets_lock:
+        viewer_sockets.add(ws)
+
+    try:
+        with state_lock:
+            ws.send(json.dumps(_get_viewer_message(include_image=True), ensure_ascii=False))
+
+        while True:
+            try:
+                message = ws.receive(timeout=30)
+                if message is None:
+                    break
+            except TimeoutError:
+                try:
+                    ws.send(json.dumps({"type": "ping"}))
+                except Exception:
+                    break
+            except Exception:
+                break
+    finally:
+        with viewer_sockets_lock:
+            viewer_sockets.discard(ws)
 
 
 @app.route("/api/latest", methods=["GET"])

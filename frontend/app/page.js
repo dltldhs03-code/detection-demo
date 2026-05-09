@@ -3,17 +3,28 @@
 import { useEffect, useRef, useState } from "react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || buildViewerWsUrl(API_URL);
 const STATUS_REFRESH_INTERVAL_MS = 500;
+const CHART_REFRESH_INTERVAL_MS = 1000;
 
 export default function HomePage() {
   const [status, setStatus] = useState(null);
   const [cctvs, setCctvs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [frameSrc, setFrameSrc] = useState("");
+  const [wsState, setWsState] = useState("connecting");
 
   const trafficUpChartRef = useRef(null);
   const trafficDownChartRef = useRef(null);
   const accidentProbabilityChartRef = useRef(null);
+  const wsRef = useRef(null);
+  const wsConnectedRef = useRef(false);
+  const shouldReconnectRef = useRef(true);
+  const reconnectTimerRef = useRef(null);
+  const lastFrameSequenceRef = useRef(0);
+  const lastChartDrawAtRef = useRef(0);
+  const chartTimerRef = useRef(null);
 
   async function refreshStatus() {
     if (!API_URL) {
@@ -28,7 +39,10 @@ export default function HomePage() {
         throw new Error(`Backend returned ${response.status}`);
       }
       const data = await response.json();
-      setStatus(data);
+      setStatus((previous) => ({ ...(previous || {}), ...data }));
+      if (!wsConnectedRef.current && data.frame_url) {
+        setFrameSrc(normalizeBackendUrl(data.frame_url));
+      }
       setError("");
       setLoading(false);
     } catch (err) {
@@ -72,43 +86,131 @@ export default function HomePage() {
   useEffect(() => {
     refreshStatus();
     refreshCctvs();
-    const intervalId = setInterval(refreshStatus, STATUS_REFRESH_INTERVAL_MS);
+    const intervalId = setInterval(() => {
+      if (!wsConnectedRef.current) refreshStatus();
+    }, STATUS_REFRESH_INTERVAL_MS);
     return () => clearInterval(intervalId);
   }, []);
 
   useEffect(() => {
     if (!status) return;
-    renderCharts({
-      trafficCount: status.traffic_count || 0,
-      trafficUpHistory: status.traffic_up_history || [0],
-      trafficDownHistory: status.traffic_down_history || [0],
-      accidentProbabilityHistory: status.accident_probability_history || [0],
-      trafficUpChart: trafficUpChartRef.current,
-      trafficDownChart: trafficDownChartRef.current,
-      accidentProbabilityChart: accidentProbabilityChartRef.current,
-    });
+    scheduleChartRender(status);
   }, [status]);
+
+  useEffect(() => {
+    connectViewerWebSocket();
+    return () => {
+      shouldReconnectRef.current = false;
+      wsConnectedRef.current = false;
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (chartTimerRef.current) clearTimeout(chartTimerRef.current);
+      if (wsRef.current) wsRef.current.close();
+    };
+  }, []);
 
   useEffect(() => {
     function handleResize() {
       if (!status) return;
-      renderCharts({
-        trafficCount: status.traffic_count || 0,
-        trafficUpHistory: status.traffic_up_history || [0],
-        trafficDownHistory: status.traffic_down_history || [0],
-        accidentProbabilityHistory: status.accident_probability_history || [0],
-        trafficUpChart: trafficUpChartRef.current,
-        trafficDownChart: trafficDownChartRef.current,
-        accidentProbabilityChart: accidentProbabilityChartRef.current,
-      });
+      lastChartDrawAtRef.current = 0;
+      scheduleChartRender(status);
     }
 
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, [status]);
 
+  function connectViewerWebSocket() {
+    if (!WS_URL) {
+      setWsState("fallback");
+      return;
+    }
+
+    try {
+      const ws = new WebSocket(WS_URL);
+      wsRef.current = ws;
+      setWsState("connecting");
+
+      ws.onopen = () => {
+        wsConnectedRef.current = true;
+        setWsState("connected");
+        setError("");
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === "ping") return;
+
+          const sequence = Number(message.frame_sequence || 0);
+          if (sequence && sequence < lastFrameSequenceRef.current) return;
+          if (sequence) lastFrameSequenceRef.current = sequence;
+
+          if (message.image_base64) {
+            setFrameSrc(`data:${message.image_mime || "image/jpeg"};base64,${message.image_base64}`);
+          }
+          setStatus((previous) => ({ ...(previous || {}), ...message }));
+          setLoading(false);
+          setError("");
+        } catch (err) {
+          setError(`WebSocket message error: ${err.message}`);
+        }
+      };
+
+      ws.onclose = () => {
+        wsConnectedRef.current = false;
+        setWsState("fallback");
+        if (shouldReconnectRef.current) {
+          reconnectTimerRef.current = setTimeout(connectViewerWebSocket, 1500);
+        }
+      };
+
+      ws.onerror = () => {
+        wsConnectedRef.current = false;
+        setWsState("fallback");
+        ws.close();
+      };
+    } catch (_err) {
+      wsConnectedRef.current = false;
+      setWsState("fallback");
+      if (shouldReconnectRef.current) {
+        reconnectTimerRef.current = setTimeout(connectViewerWebSocket, 1500);
+      }
+    }
+  }
+
+  function scheduleChartRender(nextStatus) {
+    const elapsed = Date.now() - lastChartDrawAtRef.current;
+
+    if (elapsed >= CHART_REFRESH_INTERVAL_MS) {
+      if (chartTimerRef.current) clearTimeout(chartTimerRef.current);
+      chartTimerRef.current = null;
+      drawCharts(nextStatus);
+      return;
+    }
+
+    if (chartTimerRef.current) return;
+    chartTimerRef.current = setTimeout(() => {
+      chartTimerRef.current = null;
+      drawCharts(nextStatus);
+    }, CHART_REFRESH_INTERVAL_MS - elapsed);
+  }
+
+  function drawCharts(nextStatus) {
+    lastChartDrawAtRef.current = Date.now();
+    renderCharts({
+      trafficCount: nextStatus.traffic_count || 0,
+      trafficUpHistory: nextStatus.traffic_up_history || [0],
+      trafficDownHistory: nextStatus.traffic_down_history || [0],
+      accidentProbabilityHistory: nextStatus.accident_probability_history || [0],
+      trafficUpChart: trafficUpChartRef.current,
+      trafficDownChart: trafficDownChartRef.current,
+      accidentProbabilityChart: accidentProbabilityChartRef.current,
+    });
+  }
+
   const viewStatus = status || buildEmptyStatus(loading, error);
-  const frameUrl = normalizeBackendUrl(viewStatus.frame_url || "");
+  const frameUrl = frameSrc || normalizeBackendUrl(viewStatus.frame_url || "");
+  const streamStatusText = `${error || viewStatus.stream_status} · WS ${formatWsState(wsState)}`;
 
   return (
     <main className="page">
@@ -119,7 +221,7 @@ export default function HomePage() {
         </div>
         <div className="status">
           <span className="status-label">Stream Status</span>
-          <strong id="stream-status">{error || viewStatus.stream_status}</strong>
+          <strong id="stream-status">{streamStatusText}</strong>
           <span
             className={`status-chip ${viewStatus.yolo_enabled ? "is-on" : "is-off"}`}
             id="yolo-chip"
@@ -274,6 +376,17 @@ function normalizeBackendUrl(url) {
   if (url.startsWith("http://") || url.startsWith("https://")) return url;
   if (!API_URL) return url;
   return `${API_URL}${url}`;
+}
+
+function buildViewerWsUrl(apiUrl) {
+  if (!apiUrl) return "";
+  return `${apiUrl.replace(/^http/, "ws").replace(/\/$/, "")}/ws/viewer`;
+}
+
+function formatWsState(state) {
+  if (state === "connected") return "연결됨";
+  if (state === "connecting") return "연결 중";
+  return "fallback";
 }
 
 function LatestFrame({ frameSrc, isWaiting }) {
