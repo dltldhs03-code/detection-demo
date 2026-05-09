@@ -108,9 +108,7 @@ export default function HomePage() {
   }, [status]);
 
   const viewStatus = status || buildEmptyStatus(loading, error);
-  const videoUrl = normalizeBackendUrl(
-    viewStatus.player_url || viewStatus.stream_url || viewStatus.cctv_url || "",
-  );
+  const frameUrl = normalizeBackendUrl(viewStatus.frame_url || "");
 
   return (
     <main className="page">
@@ -140,7 +138,7 @@ export default function HomePage() {
             <h2>Detection Screen</h2>
           </div>
           <div className="video-card">
-            <CctvVideoPlayer src={videoUrl} fallbackSrc={API_URL ? `${API_URL}/video_feed` : ""} />
+            <LatestFrame frameUrl={frameUrl} fallbackSrc={API_URL ? `${API_URL}/video_feed` : ""} />
           </div>
 
           <section className="analytics">
@@ -275,87 +273,17 @@ function normalizeBackendUrl(url) {
   return `${API_URL}${url}`;
 }
 
-function CctvVideoPlayer({ src, fallbackSrc }) {
-  const videoRef = useRef(null);
-  const [playerError, setPlayerError] = useState("");
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !src) return undefined;
-
-    setPlayerError("");
-    let hls;
-    let destroyed = false;
-
-    async function attachSource() {
-      video.pause();
-      video.removeAttribute("src");
-      video.load();
-
-      if (video.canPlayType("application/vnd.apple.mpegurl")) {
-        video.src = src;
-        video.play().catch(() => {});
-        return;
-      }
-
-      const Hls = await loadHls();
-      if (destroyed) return;
-
-      if (Hls?.isSupported()) {
-        hls = new Hls({
-          enableWorker: true,
-          lowLatencyMode: false,
-          maxBufferLength: 20,
-          maxMaxBufferLength: 40,
-          liveSyncDuration: 8,
-          liveMaxLatencyDuration: 20,
-        });
-        hls.on(Hls.Events.ERROR, (_event, data) => {
-          if (data?.fatal) {
-            setPlayerError(`HLS error: ${data.type || "unknown"}`);
-            hls.destroy();
-          }
-        });
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          video.play().catch(() => {});
-        });
-        hls.loadSource(src);
-        hls.attachMedia(video);
-      } else {
-        setPlayerError("이 브라우저에서 HLS 재생을 지원하지 않습니다.");
-      }
-    }
-
-    attachSource().catch((err) => {
-      setPlayerError(`HLS loader failed: ${err.message}`);
-    });
-
-    return () => {
-      destroyed = true;
-      if (hls) hls.destroy();
-    };
-  }, [src]);
-
-  if (!src && fallbackSrc) {
-    return <img id="video-feed" src={fallbackSrc} alt="CCTV detection feed" />;
-  }
-
+function LatestFrame({ frameUrl, fallbackSrc }) {
   return (
-    <div className="video-player-wrap">
-      <video
+    <div className="frame-player-wrap">
+      <img
         id="video-feed"
-        ref={videoRef}
-        autoPlay
-        controls
-        muted
-        playsInline
-        onError={() => setPlayerError("video element failed to play stream")}
+        src={frameUrl || fallbackSrc}
+        alt={frameUrl ? "Latest YOLO detection frame" : "Waiting for YOLO detection frame"}
       />
-      {playerError && (
-        <div className="video-player-error">
-          <strong>영상 재생 오류</strong>
-          <span>{playerError}</span>
-          {fallbackSrc && <span>Fallback: {fallbackSrc}</span>}
+      {!frameUrl && (
+        <div className="frame-waiting-badge">
+          YOLO sender 대기 중
         </div>
       )}
     </div>
@@ -379,11 +307,8 @@ function buildEmptyStatus(loading, error) {
     player_url: "",
     cctv_url: "",
     stream_url: "",
+    frame_url: "",
   };
-}
-
-function loadHls() {
-  return import("hls.js").then((mod) => mod.default || mod);
 }
 
 function fitCanvas(canvas) {

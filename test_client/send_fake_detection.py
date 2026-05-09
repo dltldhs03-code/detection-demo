@@ -4,7 +4,8 @@ import requests
 
 # Edit this URL after deploying the backend to Railway.
 # For local testing, use: "http://localhost:5000"
-BACKEND_URL = "http://localhost:5000"
+BACKEND_URL = "https://detection-demo-production.up.railway.app"
+
 
 
 def make_fake_detection():

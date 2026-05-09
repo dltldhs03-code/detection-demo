@@ -11,6 +11,7 @@ No YOLO, torch, ultralytics, numpy, or opencv is used.
 ```text
 detection-demo/test_client/
   send_fake_detection.py
+  send_yolo_detection.py
   README.md
 ```
 
@@ -126,3 +127,52 @@ NEXT_PUBLIC_API_URL=https://your-railway-backend-url.up.railway.app
 5. Open the Vercel frontend from any other PC.
 
 The browser should update with the latest fake detection result every 1 second.
+
+## YOLO Sender From Another Laptop
+
+Use `send_yolo_detection.py` when another laptop should act like the future Jetson Nano.
+
+Install dependencies on the sender laptop only:
+
+```bash
+pip install requests opencv-python ultralytics
+```
+
+Run with a webcam:
+
+```bash
+python send_yolo_detection.py \
+  --backend-url https://detection-demo-production.up.railway.app \
+  --model yolov8n.pt \
+  --source 0 \
+  --interval 1.0
+```
+
+Run with a video file:
+
+```bash
+python send_yolo_detection.py \
+  --backend-url https://detection-demo-production.up.railway.app \
+  --model yolov8n.pt \
+  --source ./sample.mp4 \
+  --interval 1.0
+```
+
+Run with a custom trained model:
+
+```bash
+python send_yolo_detection.py \
+  --backend-url https://detection-demo-production.up.railway.app \
+  --model /path/to/best.pt \
+  --source 0 \
+  --device cpu
+```
+
+The script sends:
+
+- `class_name`
+- `confidence`
+- `bbox`
+- annotated JPEG frame
+
+The Vercel dashboard displays the latest annotated frame when one is available.

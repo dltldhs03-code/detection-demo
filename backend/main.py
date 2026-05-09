@@ -1,9 +1,10 @@
 import html
 import json
 import os
+import base64
 from collections import deque
 from datetime import datetime, timezone
-from urllib.parse import quote, unquote, urlencode, urljoin, urlparse
+from urllib.parse import quote, urlencode, urljoin
 from urllib.request import urlopen
 
 from flask import Flask, Response, jsonify, request
@@ -16,6 +17,8 @@ CORS(app)
 # This Railway demo keeps state in memory.
 # If Railway restarts the service, these values are reset.
 latest_detection = None
+latest_frame_bytes = None
+latest_frame_mime = "image/jpeg"
 selected_index = 0
 
 HISTORY_LIMIT = 36
@@ -128,7 +131,7 @@ def _get_cctv_items():
             "selected": index == selected_index,
             "cctv_url": item.get("cctv_url", ""),
             "stream_url": item.get("stream_url", ""),
-            "player_url": f"/api/stream/{index}",
+            "player_url": "",
         }
         for index, item in enumerate(cctv_records)
     ]
@@ -138,6 +141,7 @@ def _get_status():
     _ensure_cctv_records()
     metrics = _calculate_metrics(latest_detection)
     selected_cctv = cctv_records[selected_index]
+    frame_url = _latest_frame_url()
     return {
         "selected_index": selected_index,
         "selected_name": selected_cctv["name"],
@@ -150,7 +154,7 @@ def _get_status():
         "accident_probability_history": list(accident_probability_history),
         "accident_status": metrics["accident_status"],
         "stream_status": "연결됨" if latest_detection else "준비 중",
-        "player_url": f"/api/stream/{selected_index}",
+        "player_url": _latest_frame_url() or "/video_feed",
         "cctv_url": selected_cctv.get("cctv_url", ""),
         "stream_url": selected_cctv.get("stream_url", ""),
         "cctv_source": cctv_records_source,
@@ -160,7 +164,52 @@ def _get_status():
         "roi_enabled": False,
         "roi_path": "Railway remote demo backend",
         "latest_detection": latest_detection,
+        "frame_url": frame_url,
     }
+
+
+def _latest_frame_url():
+    if latest_frame_bytes is None or latest_detection is None:
+        return ""
+
+    timestamp = quote(str(latest_detection.get("timestamp", "")), safe="")
+    return f"/api/latest-frame?ts={timestamp}"
+
+
+def _decode_base64_image(value):
+    if not value:
+        return None
+
+    if "," in value and value.strip().startswith("data:"):
+        value = value.split(",", 1)[1]
+
+    return base64.b64decode(value)
+
+
+def _parse_detection_payload():
+    frame_bytes = None
+    frame_mime = "image/jpeg"
+
+    if request.is_json:
+        data = request.get_json(silent=True)
+        if data and data.get("image_base64"):
+            frame_bytes = _decode_base64_image(data.get("image_base64"))
+            frame_mime = data.get("image_mime", "image/jpeg")
+        return data, frame_bytes, frame_mime
+
+    data = request.form.to_dict()
+    frame = request.files.get("frame")
+    if frame:
+        frame_bytes = frame.read()
+        frame_mime = frame.mimetype or "image/jpeg"
+
+    return data, frame_bytes, frame_mime
+
+
+def _parse_bbox(value):
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
 
 
 def _fallback_cctv_records():
@@ -320,9 +369,9 @@ def health():
 
 @app.route("/api/detection", methods=["POST"])
 def receive_detection():
-    global latest_detection
+    global latest_detection, latest_frame_bytes, latest_frame_mime
 
-    data = request.get_json(silent=True)
+    data, frame_bytes, frame_mime = _parse_detection_payload()
     if not data:
         return jsonify({"status": "error", "message": "JSON body is required"}), 400
 
@@ -342,10 +391,18 @@ def receive_detection():
 
     latest_detection = {
         "class_name": data["class_name"],
-        "confidence": data["confidence"],
-        "bbox": data["bbox"],
+        "confidence": float(data["confidence"]),
+        "bbox": _parse_bbox(data["bbox"]),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    if frame_bytes:
+        latest_frame_bytes = frame_bytes
+        latest_frame_mime = frame_mime
+    else:
+        latest_frame_bytes = None
+        latest_frame_mime = "image/jpeg"
+
+    latest_detection["frame_url"] = _latest_frame_url()
     _append_metric_history(_calculate_metrics(latest_detection))
 
     return jsonify({"status": "ok", "data": latest_detection})
@@ -353,7 +410,19 @@ def receive_detection():
 
 @app.route("/api/latest", methods=["GET"])
 def get_latest_detection():
+    if latest_detection:
+        latest_detection["frame_url"] = _latest_frame_url()
     return jsonify({"data": latest_detection})
+
+
+@app.route("/api/latest-frame", methods=["GET"])
+def get_latest_frame():
+    if latest_frame_bytes is None:
+        return Response(_build_svg_frame(), mimetype="image/svg+xml")
+
+    response = Response(latest_frame_bytes, mimetype=latest_frame_mime)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.route("/api/status", methods=["GET"])
@@ -410,98 +479,6 @@ def video_feed():
     # This remote demo returns a lightweight SVG frame so Vercel can display
     # the same route without requiring YOLO/OpenCV on Railway.
     return Response(_build_svg_frame(), mimetype="image/svg+xml")
-
-
-def _fetch_url_text(url, timeout=12):
-    with urlopen(url, timeout=timeout) as response:
-        final_url = response.geturl()
-        content_type = response.headers.get("Content-Type", "")
-        text = response.read().decode("utf-8", errors="replace")
-    return final_url, content_type, text
-
-
-def _is_allowed_cctv_url(url):
-    parsed = urlparse(url)
-    hostname = parsed.hostname or ""
-    return parsed.scheme in {"http", "https"} and hostname.endswith("ktict.co.kr")
-
-
-def _proxy_segment_url(url):
-    return f"/api/stream-segment?url={quote(url, safe='')}"
-
-
-@app.route("/api/stream/<int:index>", methods=["GET"])
-def api_stream(index):
-    _ensure_cctv_records()
-    if index < 0 or index >= len(cctv_records):
-        return Response("Invalid CCTV index", status=400)
-
-    source_url = cctv_records[index].get("stream_url") or cctv_records[index].get("cctv_url")
-    if not source_url:
-        return Response(_build_svg_frame(), mimetype="image/svg+xml")
-
-    try:
-        playlist_url, _content_type, playlist_text = _fetch_url_text(source_url)
-    except Exception as exc:
-        return Response(f"Failed to fetch CCTV playlist: {exc}", status=502)
-
-    rewritten_lines = []
-    for line in playlist_text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            rewritten_lines.append(line)
-            continue
-
-        absolute_url = urljoin(playlist_url, stripped)
-        rewritten_lines.append(_proxy_segment_url(absolute_url))
-
-    response = Response("\n".join(rewritten_lines), mimetype="application/vnd.apple.mpegurl")
-    response.headers["Cache-Control"] = "no-store"
-    return response
-
-
-@app.route("/api/stream-segment", methods=["GET"])
-def api_stream_segment():
-    raw_url = request.args.get("url", "")
-    source_url = unquote(raw_url)
-    if not _is_allowed_cctv_url(source_url):
-        return Response("Blocked stream URL", status=400)
-
-    try:
-        with urlopen(source_url, timeout=12) as upstream:
-            data = upstream.read()
-            content_type = upstream.headers.get("Content-Type") or "application/octet-stream"
-            final_url = upstream.geturl()
-    except Exception as exc:
-        return Response(f"Failed to fetch CCTV segment: {exc}", status=502)
-
-    is_playlist = (
-        source_url.endswith(".m3u8")
-        or "mpegurl" in content_type.lower()
-        or data.startswith(b"#EXTM3U")
-    )
-    if is_playlist:
-        playlist_text = data.decode("utf-8", errors="replace")
-        rewritten_lines = []
-        for line in playlist_text.splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                rewritten_lines.append(line)
-                continue
-
-            absolute_url = urljoin(final_url, stripped)
-            rewritten_lines.append(_proxy_segment_url(absolute_url))
-
-        response = Response(
-            "\n".join(rewritten_lines),
-            mimetype="application/vnd.apple.mpegurl",
-        )
-        response.headers["Cache-Control"] = "no-store"
-        return response
-
-    response = Response(data, mimetype=content_type)
-    response.headers["Cache-Control"] = "no-store"
-    return response
 
 
 if __name__ == "__main__":
