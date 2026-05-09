@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
-const STATUS_REFRESH_INTERVAL_MS = 1000;
+const STATUS_REFRESH_INTERVAL_MS = 500;
 
 export default function HomePage() {
   const [status, setStatus] = useState(null);
@@ -108,7 +108,7 @@ export default function HomePage() {
   }, [status]);
 
   const viewStatus = status || buildEmptyStatus(loading, error);
-  const frameStreamUrl = normalizeBackendUrl(viewStatus.frame_stream_url || "/api/frame-stream");
+  const frameUrl = normalizeBackendUrl(viewStatus.frame_url || "");
 
   return (
     <main className="page">
@@ -139,7 +139,7 @@ export default function HomePage() {
           </div>
           <div className="video-card">
             <LatestFrame
-              frameSrc={frameStreamUrl || (API_URL ? `${API_URL}/video_feed` : "")}
+              frameSrc={frameUrl || (API_URL ? `${API_URL}/video_feed` : "")}
               isWaiting={!viewStatus.yolo_enabled}
             />
           </div>
@@ -311,7 +311,6 @@ function buildEmptyStatus(loading, error) {
     cctv_url: "",
     stream_url: "",
     frame_url: "",
-    frame_stream_url: "/api/frame-stream",
   };
 }
 

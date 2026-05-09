@@ -2,7 +2,6 @@ import html
 import json
 import os
 import base64
-import time
 from collections import deque
 from datetime import datetime, timezone
 from urllib.parse import quote, urlencode, urljoin
@@ -20,7 +19,6 @@ CORS(app)
 latest_detection = None
 latest_frame_bytes = None
 latest_frame_mime = "image/jpeg"
-latest_frame_version = 0
 selected_index = 0
 
 HISTORY_LIMIT = 36
@@ -165,7 +163,6 @@ def _get_status():
         "accident_status": metrics["accident_status"],
         "stream_status": remote_stream_status or ("연결됨" if latest_detection else "준비 중"),
         "player_url": _latest_frame_url() or "/video_feed",
-        "frame_stream_url": "/api/frame-stream",
         "cctv_url": selected_cctv.get("cctv_url", ""),
         "stream_url": selected_cctv.get("stream_url", ""),
         "cctv_source": cctv_records_source,
@@ -375,7 +372,6 @@ def index():
                 "/api/status",
                 "/api/cctvs",
                 "/api/select/<index>",
-                "/api/frame-stream",
                 "/video_feed",
             ],
         }
@@ -389,7 +385,7 @@ def health():
 
 @app.route("/api/detection", methods=["POST"])
 def receive_detection():
-    global latest_detection, latest_frame_bytes, latest_frame_mime, latest_frame_version
+    global latest_detection, latest_frame_bytes, latest_frame_mime
 
     data, frame_bytes, frame_mime = _parse_detection_payload()
     if not data:
@@ -443,7 +439,6 @@ def receive_detection():
     else:
         latest_frame_bytes = None
         latest_frame_mime = "image/jpeg"
-    latest_frame_version += 1
 
     latest_detection["frame_url"] = _latest_frame_url()
     _append_metric_history(_calculate_metrics(latest_detection))
@@ -465,41 +460,6 @@ def get_latest_frame():
 
     response = Response(latest_frame_bytes, mimetype=latest_frame_mime)
     response.headers["Cache-Control"] = "no-store"
-    return response
-
-
-@app.route("/api/frame-stream", methods=["GET"])
-def frame_stream():
-    def generate():
-        last_sent_version = -1
-
-        while True:
-            frame_bytes = latest_frame_bytes
-            frame_mime = latest_frame_mime
-            frame_version = latest_frame_version
-
-            if frame_bytes is None:
-                frame_bytes = _build_svg_frame().encode("utf-8")
-                frame_mime = "image/svg+xml"
-
-            if frame_version != last_sent_version:
-                yield (
-                    b"--frame\r\n"
-                    + f"Content-Type: {frame_mime}\r\n".encode("utf-8")
-                    + b"Cache-Control: no-store\r\n\r\n"
-                    + frame_bytes
-                    + b"\r\n"
-                )
-                last_sent_version = frame_version
-
-            time.sleep(0.05)
-
-    response = Response(
-        generate(),
-        mimetype="multipart/x-mixed-replace; boundary=frame",
-    )
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["X-Accel-Buffering"] = "no"
     return response
 
 
