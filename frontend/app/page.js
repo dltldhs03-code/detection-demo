@@ -108,7 +108,7 @@ export default function HomePage() {
   }, [status]);
 
   const viewStatus = status || buildEmptyStatus(loading, error);
-  const frameUrl = normalizeBackendUrl(viewStatus.frame_url || "");
+  const frameStreamUrl = normalizeBackendUrl(viewStatus.frame_stream_url || "/api/frame-stream");
 
   return (
     <main className="page">
@@ -138,7 +138,10 @@ export default function HomePage() {
             <h2>Detection Screen</h2>
           </div>
           <div className="video-card">
-            <LatestFrame frameUrl={frameUrl} fallbackSrc={API_URL ? `${API_URL}/video_feed` : ""} />
+            <LatestFrame
+              frameSrc={frameStreamUrl || (API_URL ? `${API_URL}/video_feed` : "")}
+              isWaiting={!viewStatus.yolo_enabled}
+            />
           </div>
 
           <section className="analytics">
@@ -273,15 +276,15 @@ function normalizeBackendUrl(url) {
   return `${API_URL}${url}`;
 }
 
-function LatestFrame({ frameUrl, fallbackSrc }) {
+function LatestFrame({ frameSrc, isWaiting }) {
   return (
     <div className="frame-player-wrap">
       <img
         id="video-feed"
-        src={frameUrl || fallbackSrc}
-        alt={frameUrl ? "Latest YOLO detection frame" : "Waiting for YOLO detection frame"}
+        src={frameSrc}
+        alt={isWaiting ? "Waiting for YOLO detection frame" : "Live YOLO detection frame"}
       />
-      {!frameUrl && (
+      {isWaiting && (
         <div className="frame-waiting-badge">
           YOLO sender 대기 중
         </div>
@@ -308,6 +311,7 @@ function buildEmptyStatus(loading, error) {
     cctv_url: "",
     stream_url: "",
     frame_url: "",
+    frame_stream_url: "/api/frame-stream",
   };
 }
 

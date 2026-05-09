@@ -2,6 +2,7 @@ import html
 import json
 import os
 import base64
+import time
 from collections import deque
 from datetime import datetime, timezone
 from urllib.parse import quote, urlencode, urljoin
@@ -19,6 +20,7 @@ CORS(app)
 latest_detection = None
 latest_frame_bytes = None
 latest_frame_mime = "image/jpeg"
+latest_frame_version = 0
 selected_index = 0
 
 HISTORY_LIMIT = 36
@@ -101,7 +103,11 @@ def _calculate_metrics(detection):
         }
 
     confidence = float(detection.get("confidence", 0) or 0)
-    traffic_count = max(1, round(confidence * 10))
+    traffic_count = int(
+        detection.get("traffic_count")
+        or detection.get("detection_count")
+        or max(1, round(confidence * 10))
+    )
     traffic_up = round(traffic_count * 0.55)
     traffic_down = max(0, traffic_count - traffic_up)
     imbalance = abs(traffic_up - traffic_down)
@@ -142,9 +148,13 @@ def _get_status():
     metrics = _calculate_metrics(latest_detection)
     selected_cctv = cctv_records[selected_index]
     frame_url = _latest_frame_url()
+    remote_selected_name = (latest_detection or {}).get("selected_name")
+    remote_selected_index = (latest_detection or {}).get("selected_index")
+    remote_stream_status = (latest_detection or {}).get("stream_status")
+    remote_roi_path = (latest_detection or {}).get("roi_path")
     return {
-        "selected_index": selected_index,
-        "selected_name": selected_cctv["name"],
+        "selected_index": remote_selected_index if remote_selected_index is not None else selected_index,
+        "selected_name": remote_selected_name or selected_cctv["name"],
         "traffic_count": metrics["traffic_count"],
         "traffic_up": metrics["traffic_up"],
         "traffic_down": metrics["traffic_down"],
@@ -153,8 +163,9 @@ def _get_status():
         "accident_probability": metrics["accident_probability"],
         "accident_probability_history": list(accident_probability_history),
         "accident_status": metrics["accident_status"],
-        "stream_status": "연결됨" if latest_detection else "준비 중",
+        "stream_status": remote_stream_status or ("연결됨" if latest_detection else "준비 중"),
         "player_url": _latest_frame_url() or "/video_feed",
+        "frame_stream_url": "/api/frame-stream",
         "cctv_url": selected_cctv.get("cctv_url", ""),
         "stream_url": selected_cctv.get("stream_url", ""),
         "cctv_source": cctv_records_source,
@@ -162,7 +173,7 @@ def _get_status():
         "cctv_count": len(cctv_records),
         "yolo_enabled": latest_detection is not None,
         "roi_enabled": False,
-        "roi_path": "Railway remote demo backend",
+        "roi_path": remote_roi_path or "Railway remote demo backend",
         "latest_detection": latest_detection,
         "frame_url": frame_url,
     }
@@ -207,6 +218,14 @@ def _parse_detection_payload():
 
 
 def _parse_bbox(value):
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def _parse_detections(value):
+    if not value:
+        return []
     if isinstance(value, str):
         return json.loads(value)
     return value
@@ -356,6 +375,7 @@ def index():
                 "/api/status",
                 "/api/cctvs",
                 "/api/select/<index>",
+                "/api/frame-stream",
                 "/video_feed",
             ],
         }
@@ -369,30 +389,52 @@ def health():
 
 @app.route("/api/detection", methods=["POST"])
 def receive_detection():
-    global latest_detection, latest_frame_bytes, latest_frame_mime
+    global latest_detection, latest_frame_bytes, latest_frame_mime, latest_frame_version
 
     data, frame_bytes, frame_mime = _parse_detection_payload()
     if not data:
         return jsonify({"status": "error", "message": "JSON body is required"}), 400
 
-    required_fields = ["class_name", "confidence", "bbox"]
-    missing_fields = [field for field in required_fields if field not in data]
-    if missing_fields:
+    detections = _parse_detections(data.get("detections"))
+    has_single_detection = all(field in data for field in ["class_name", "confidence", "bbox"])
+    if not detections and not has_single_detection:
         return (
             jsonify(
                 {
                     "status": "error",
-                    "message": "Missing required field(s)",
-                    "missing_fields": missing_fields,
+                    "message": "Send either detections or class_name/confidence/bbox",
                 }
             ),
             400,
         )
 
+    if not detections:
+        detections = [
+            {
+                "class_name": data["class_name"],
+                "confidence": float(data["confidence"]),
+                "bbox": _parse_bbox(data["bbox"]),
+            }
+        ]
+
+    best_detection = max(
+        detections,
+        key=lambda item: float(item.get("confidence", 0) or 0),
+        default={"class_name": "none", "confidence": 0.0, "bbox": [0, 0, 0, 0]},
+    )
+    traffic_count = int(data.get("traffic_count") or len(detections))
     latest_detection = {
-        "class_name": data["class_name"],
-        "confidence": float(data["confidence"]),
-        "bbox": _parse_bbox(data["bbox"]),
+        "class_name": best_detection.get("class_name", "none"),
+        "confidence": float(best_detection.get("confidence", 0) or 0),
+        "bbox": best_detection.get("bbox", [0, 0, 0, 0]),
+        "detections": detections,
+        "detection_count": len(detections),
+        "traffic_count": traffic_count,
+        "selected_name": data.get("selected_name"),
+        "selected_index": data.get("selected_index"),
+        "stream_status": data.get("stream_status"),
+        "roi_enabled": str(data.get("roi_enabled", "")).lower() in {"1", "true", "yes"},
+        "roi_path": data.get("roi_path"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     if frame_bytes:
@@ -401,6 +443,7 @@ def receive_detection():
     else:
         latest_frame_bytes = None
         latest_frame_mime = "image/jpeg"
+    latest_frame_version += 1
 
     latest_detection["frame_url"] = _latest_frame_url()
     _append_metric_history(_calculate_metrics(latest_detection))
@@ -422,6 +465,41 @@ def get_latest_frame():
 
     response = Response(latest_frame_bytes, mimetype=latest_frame_mime)
     response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route("/api/frame-stream", methods=["GET"])
+def frame_stream():
+    def generate():
+        last_sent_version = -1
+
+        while True:
+            frame_bytes = latest_frame_bytes
+            frame_mime = latest_frame_mime
+            frame_version = latest_frame_version
+
+            if frame_bytes is None:
+                frame_bytes = _build_svg_frame().encode("utf-8")
+                frame_mime = "image/svg+xml"
+
+            if frame_version != last_sent_version:
+                yield (
+                    b"--frame\r\n"
+                    + f"Content-Type: {frame_mime}\r\n".encode("utf-8")
+                    + b"Cache-Control: no-store\r\n\r\n"
+                    + frame_bytes
+                    + b"\r\n"
+                )
+                last_sent_version = frame_version
+
+            time.sleep(0.05)
+
+    response = Response(
+        generate(),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Accel-Buffering"] = "no"
     return response
 
 
