@@ -1,5 +1,5 @@
-cd ~/capstone/detection-demo
-
-git add backend/main.py frontend/app/page.js frontend/app/globals.css frontend/package.json test_client/send_fake_detection.py test_client/send_yolo_detection.py test_client/README.md
-git commit -m "Use YOLO frame upload instead of CCTV stream playback"
-git push
+python send_yolo_detection.py \
+  --backend-url https://detection-demo-production.up.railway.app \
+  --model yolov8n.pt \
+  --source 0 \
+  --interval 0.3
