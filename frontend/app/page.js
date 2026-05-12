@@ -6,6 +6,8 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL;
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || buildViewerWsUrl(API_URL);
 const STATUS_REFRESH_INTERVAL_MS = 500;
 const CHART_REFRESH_INTERVAL_MS = 1000;
+const FRAME_RENDER_INTERVAL_MS = 100;
+const STATUS_RENDER_INTERVAL_MS = 250;
 
 export default function HomePage() {
   const [status, setStatus] = useState(null);
@@ -24,8 +26,14 @@ export default function HomePage() {
   const shouldReconnectRef = useRef(true);
   const reconnectTimerRef = useRef(null);
   const lastFrameSequenceRef = useRef(0);
+  const lastFrameRenderAtRef = useRef(0);
+  const frameRenderTimerRef = useRef(null);
+  const pendingFrameSrcRef = useRef("");
   const lastChartDrawAtRef = useRef(0);
   const chartTimerRef = useRef(null);
+  const lastStatusRenderAtRef = useRef(0);
+  const statusRenderTimerRef = useRef(null);
+  const pendingStatusRef = useRef(null);
 
   async function refreshStatus() {
     if (!API_URL) {
@@ -104,7 +112,9 @@ export default function HomePage() {
       shouldReconnectRef.current = false;
       wsConnectedRef.current = false;
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (frameRenderTimerRef.current) clearTimeout(frameRenderTimerRef.current);
       if (chartTimerRef.current) clearTimeout(chartTimerRef.current);
+      if (statusRenderTimerRef.current) clearTimeout(statusRenderTimerRef.current);
       if (wsRef.current) wsRef.current.close();
     };
   }, []);
@@ -149,9 +159,9 @@ export default function HomePage() {
           const { image_base64: imageBase64, ...statusMessage } = message;
           if (imageBase64) {
             const nextFrameSrc = `data:${message.image_mime || "image/jpeg"};base64,${imageBase64}`;
-            setFrameSrc(nextFrameSrc);
+            queueFrameRender(nextFrameSrc);
           }
-          setStatus((previous) => ({ ...(previous || {}), ...statusMessage }));
+          queueStatusRender(statusMessage);
           setLoading(false);
           setError("");
         } catch (err) {
@@ -179,6 +189,69 @@ export default function HomePage() {
         reconnectTimerRef.current = setTimeout(connectViewerWebSocket, 1500);
       }
     }
+  }
+
+  function queueFrameRender(nextFrameSrc) {
+    pendingFrameSrcRef.current = nextFrameSrc;
+
+    const elapsed = Date.now() - lastFrameRenderAtRef.current;
+    if (elapsed >= FRAME_RENDER_INTERVAL_MS) {
+      flushFrameRender();
+      return;
+    }
+
+    if (frameRenderTimerRef.current) return;
+    frameRenderTimerRef.current = setTimeout(
+      flushFrameRender,
+      FRAME_RENDER_INTERVAL_MS - elapsed,
+    );
+  }
+
+  function flushFrameRender() {
+    if (frameRenderTimerRef.current) {
+      clearTimeout(frameRenderTimerRef.current);
+      frameRenderTimerRef.current = null;
+    }
+
+    const nextFrameSrc = pendingFrameSrcRef.current;
+    if (!nextFrameSrc) return;
+
+    pendingFrameSrcRef.current = "";
+    lastFrameRenderAtRef.current = Date.now();
+    setFrameSrc(nextFrameSrc);
+  }
+
+  function queueStatusRender(nextStatus) {
+    pendingStatusRef.current = {
+      ...(pendingStatusRef.current || {}),
+      ...nextStatus,
+    };
+
+    const elapsed = Date.now() - lastStatusRenderAtRef.current;
+    if (elapsed >= STATUS_RENDER_INTERVAL_MS) {
+      flushStatusRender();
+      return;
+    }
+
+    if (statusRenderTimerRef.current) return;
+    statusRenderTimerRef.current = setTimeout(
+      flushStatusRender,
+      STATUS_RENDER_INTERVAL_MS - elapsed,
+    );
+  }
+
+  function flushStatusRender() {
+    if (statusRenderTimerRef.current) {
+      clearTimeout(statusRenderTimerRef.current);
+      statusRenderTimerRef.current = null;
+    }
+
+    const nextStatus = pendingStatusRef.current;
+    if (!nextStatus) return;
+
+    pendingStatusRef.current = null;
+    lastStatusRenderAtRef.current = Date.now();
+    setStatus((previous) => ({ ...(previous || {}), ...nextStatus }));
   }
 
   function scheduleChartRender(nextStatus) {
