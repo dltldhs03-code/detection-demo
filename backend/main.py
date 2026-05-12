@@ -28,6 +28,8 @@ selected_index = 0
 state_lock = threading.Lock()
 viewer_sockets = set()
 viewer_sockets_lock = threading.Lock()
+viewer_broadcast_condition = threading.Condition()
+pending_viewer_message = None
 
 HISTORY_LIMIT = 36
 traffic_up_history = deque([0], maxlen=HISTORY_LIMIT)
@@ -386,6 +388,27 @@ def _broadcast_to_viewers(message):
                 viewer_sockets.discard(ws)
 
 
+def _queue_viewer_broadcast(message):
+    global pending_viewer_message
+
+    with viewer_broadcast_condition:
+        pending_viewer_message = message
+        viewer_broadcast_condition.notify()
+
+
+def _viewer_broadcast_worker():
+    global pending_viewer_message
+
+    while True:
+        with viewer_broadcast_condition:
+            while pending_viewer_message is None:
+                viewer_broadcast_condition.wait()
+            message = pending_viewer_message
+            pending_viewer_message = None
+
+        _broadcast_to_viewers(message)
+
+
 def _fallback_cctv_records():
     return [dict(item) for item in STATIC_CCTV_RECORDS]
 
@@ -532,6 +555,7 @@ def index():
                 "/api/select/<index>",
                 "/video_feed",
                 "/ws/sender",
+                "/ws/detection",
                 "/ws/viewer",
             ],
         }
@@ -556,13 +580,12 @@ def receive_detection():
     except ValueError as exc:
         return jsonify({"status": "error", "message": str(exc)}), 400
 
-    _broadcast_to_viewers(viewer_message)
+    _queue_viewer_broadcast(viewer_message)
 
     return jsonify({"status": "ok", "data": detection})
 
 
-@sock.route("/ws/sender")
-def ws_sender(ws):
+def _receive_sender_websocket(ws):
     while True:
         try:
             raw_message = ws.receive()
@@ -579,7 +602,7 @@ def ws_sender(ws):
                 _update_latest_detection(data, frame_bytes, frame_mime)
                 viewer_message = _get_viewer_message(include_image=True)
 
-            _broadcast_to_viewers(viewer_message)
+            _queue_viewer_broadcast(viewer_message)
         except json.JSONDecodeError:
             try:
                 ws.send(json.dumps({"status": "error", "message": "Invalid JSON"}))
@@ -590,6 +613,16 @@ def ws_sender(ws):
                 ws.send(json.dumps({"status": "error", "message": str(exc)}))
             except Exception:
                 break
+
+
+@sock.route("/ws/sender")
+def ws_sender(ws):
+    _receive_sender_websocket(ws)
+
+
+@sock.route("/ws/detection")
+def ws_detection(ws):
+    _receive_sender_websocket(ws)
 
 
 @sock.route("/ws/viewer")
@@ -689,6 +722,9 @@ def video_feed():
     # This remote demo returns a lightweight SVG frame so Vercel can display
     # the same route without requiring YOLO/OpenCV on Railway.
     return Response(_build_svg_frame(), mimetype="image/svg+xml")
+
+
+threading.Thread(target=_viewer_broadcast_worker, daemon=True).start()
 
 
 if __name__ == "__main__":

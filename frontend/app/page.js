@@ -149,11 +149,7 @@ export default function HomePage() {
           const { image_base64: imageBase64, ...statusMessage } = message;
           if (imageBase64) {
             const nextFrameSrc = `data:${message.image_mime || "image/jpeg"};base64,${imageBase64}`;
-            if (frameImgRef.current) {
-              frameImgRef.current.src = nextFrameSrc;
-            } else {
-              setFrameSrc(nextFrameSrc);
-            }
+            setFrameSrc(nextFrameSrc);
           }
           setStatus((previous) => ({ ...(previous || {}), ...statusMessage }));
           setLoading(false);
