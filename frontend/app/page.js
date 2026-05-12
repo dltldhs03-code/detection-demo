@@ -156,10 +156,13 @@ export default function HomePage() {
           if (sequence && sequence < lastFrameSequenceRef.current) return;
           if (sequence) lastFrameSequenceRef.current = sequence;
 
-          const { image_base64: imageBase64, ...statusMessage } = message;
-          if (imageBase64) {
-            const nextFrameSrc = `data:${message.image_mime || "image/jpeg"};base64,${imageBase64}`;
-            queueFrameRender(nextFrameSrc);
+          const { image_base64: _imageBase64, ...statusMessage } = message;
+          if (message.frame_url) {
+            queueFrameRender(
+              normalizeBackendUrl(
+                `${message.frame_url}${message.frame_url.includes("?") ? "&" : "?"}seq=${sequence || Date.now()}`,
+              ),
+            );
           }
           queueStatusRender(statusMessage);
           setLoading(false);

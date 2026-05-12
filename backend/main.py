@@ -576,7 +576,7 @@ def receive_detection():
     try:
         with state_lock:
             detection = _update_latest_detection(data, frame_bytes, frame_mime)
-            viewer_message = _get_viewer_message(include_image=True)
+            viewer_message = _get_viewer_message(include_image=False)
     except ValueError as exc:
         return jsonify({"status": "error", "message": str(exc)}), 400
 
@@ -600,7 +600,7 @@ def _receive_sender_websocket(ws):
 
             with state_lock:
                 _update_latest_detection(data, frame_bytes, frame_mime)
-                viewer_message = _get_viewer_message(include_image=True)
+                viewer_message = _get_viewer_message(include_image=False)
 
             _queue_viewer_broadcast(viewer_message)
         except json.JSONDecodeError:
