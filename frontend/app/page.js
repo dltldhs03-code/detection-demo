@@ -6,7 +6,6 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL;
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || buildViewerWsUrl(API_URL);
 const STATUS_REFRESH_INTERVAL_MS = 500;
 const CHART_REFRESH_INTERVAL_MS = 1000;
-const FRAME_RENDER_INTERVAL_MS = 100;
 const STATUS_RENDER_INTERVAL_MS = 250;
 
 export default function HomePage() {
@@ -26,9 +25,6 @@ export default function HomePage() {
   const shouldReconnectRef = useRef(true);
   const reconnectTimerRef = useRef(null);
   const lastFrameSequenceRef = useRef(0);
-  const lastFrameRenderAtRef = useRef(0);
-  const frameRenderTimerRef = useRef(null);
-  const pendingFrameSrcRef = useRef("");
   const lastChartDrawAtRef = useRef(0);
   const chartTimerRef = useRef(null);
   const lastStatusRenderAtRef = useRef(0);
@@ -112,7 +108,6 @@ export default function HomePage() {
       shouldReconnectRef.current = false;
       wsConnectedRef.current = false;
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-      if (frameRenderTimerRef.current) clearTimeout(frameRenderTimerRef.current);
       if (chartTimerRef.current) clearTimeout(chartTimerRef.current);
       if (statusRenderTimerRef.current) clearTimeout(statusRenderTimerRef.current);
       if (wsRef.current) wsRef.current.close();
@@ -144,6 +139,9 @@ export default function HomePage() {
       ws.onopen = () => {
         wsConnectedRef.current = true;
         setWsState("connected");
+        if (API_URL) {
+          setFrameSrc(`${API_URL}/video_feed?stream=${Date.now()}`);
+        }
         setError("");
       };
 
@@ -157,13 +155,6 @@ export default function HomePage() {
           if (sequence) lastFrameSequenceRef.current = sequence;
 
           const { image_base64: _imageBase64, ...statusMessage } = message;
-          if (message.frame_url) {
-            queueFrameRender(
-              normalizeBackendUrl(
-                `${message.frame_url}${message.frame_url.includes("?") ? "&" : "?"}seq=${sequence || Date.now()}`,
-              ),
-            );
-          }
           queueStatusRender(statusMessage);
           setLoading(false);
           setError("");
@@ -192,36 +183,6 @@ export default function HomePage() {
         reconnectTimerRef.current = setTimeout(connectViewerWebSocket, 1500);
       }
     }
-  }
-
-  function queueFrameRender(nextFrameSrc) {
-    pendingFrameSrcRef.current = nextFrameSrc;
-
-    const elapsed = Date.now() - lastFrameRenderAtRef.current;
-    if (elapsed >= FRAME_RENDER_INTERVAL_MS) {
-      flushFrameRender();
-      return;
-    }
-
-    if (frameRenderTimerRef.current) return;
-    frameRenderTimerRef.current = setTimeout(
-      flushFrameRender,
-      FRAME_RENDER_INTERVAL_MS - elapsed,
-    );
-  }
-
-  function flushFrameRender() {
-    if (frameRenderTimerRef.current) {
-      clearTimeout(frameRenderTimerRef.current);
-      frameRenderTimerRef.current = null;
-    }
-
-    const nextFrameSrc = pendingFrameSrcRef.current;
-    if (!nextFrameSrc) return;
-
-    pendingFrameSrcRef.current = "";
-    lastFrameRenderAtRef.current = Date.now();
-    setFrameSrc(nextFrameSrc);
   }
 
   function queueStatusRender(nextStatus) {
