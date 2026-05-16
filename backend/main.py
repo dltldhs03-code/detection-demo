@@ -25,6 +25,7 @@ latest_frame_mime = "image/jpeg"
 latest_frame_base64 = ""
 latest_frame_sequence = 0
 selected_index = 0
+selection_version = 0
 state_lock = threading.Lock()
 viewer_sockets = set()
 viewer_sockets_lock = threading.Lock()
@@ -152,6 +153,20 @@ def _get_cctv_items():
     ]
 
 
+def _get_control_state():
+    _ensure_cctv_records()
+    selected_cctv = cctv_records[selected_index]
+    return {
+        "selected_index": selected_index,
+        "selected_name": selected_cctv["name"],
+        "cctv_url": selected_cctv.get("cctv_url", ""),
+        "stream_url": selected_cctv.get("stream_url", ""),
+        "selection_version": selection_version,
+        "cctv_source": cctv_records_source,
+        "cctv_error": cctv_records_error,
+    }
+
+
 def _get_status():
     _ensure_cctv_records()
     metrics = _calculate_metrics(latest_detection)
@@ -179,6 +194,9 @@ def _get_status():
         "cctv_source": cctv_records_source,
         "cctv_error": cctv_records_error,
         "cctv_count": len(cctv_records),
+        "control_selected_index": selected_index,
+        "control_selected_name": selected_cctv["name"],
+        "selection_version": selection_version,
         "yolo_enabled": latest_detection is not None,
         "roi_enabled": False,
         "roi_path": remote_roi_path or "Railway remote demo backend",
@@ -555,6 +573,7 @@ def index():
                 "/api/latest",
                 "/api/status",
                 "/api/cctvs",
+                "/api/control",
                 "/api/select/<index>",
                 "/video_feed",
                 "/ws/sender",
@@ -688,14 +707,20 @@ def api_cctvs():
     )
 
 
+@app.route("/api/control", methods=["GET"])
+def api_control():
+    return jsonify(_get_control_state())
+
+
 @app.route("/api/reload-cctvs", methods=["POST"])
 def api_reload_cctvs():
-    global cctv_records, cctv_records_error, cctv_records_source, selected_index
+    global cctv_records, cctv_records_error, cctv_records_source, selected_index, selection_version
 
     cctv_records = []
     cctv_records_source = "not_loaded"
     cctv_records_error = ""
     selected_index = 0
+    selection_version += 1
     _ensure_cctv_records()
     return jsonify(
         {
@@ -709,13 +734,14 @@ def api_reload_cctvs():
 
 @app.route("/api/select/<int:index>", methods=["POST"])
 def api_select(index):
-    global selected_index
+    global selected_index, selection_version
 
     _ensure_cctv_records()
     if index < 0 or index >= len(cctv_records):
         return jsonify({"ok": False, "error": "Invalid CCTV index"}), 400
 
     selected_index = index
+    selection_version += 1
     return jsonify({"ok": True, "status": _get_status()})
 
 
