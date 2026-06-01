@@ -2,5 +2,3 @@ flask
 flask-cors
 flask-sock
 gunicorn
-numpy
-opencv-python-headless
