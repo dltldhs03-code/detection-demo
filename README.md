@@ -1,1 +1,1 @@
-DETECTION_BACKEND_URL=https://detection-demo-production.up.railway.app DETECTION_TRANSPORT=websocket DETECTION_WS_HTTP_FALLBACK=1 DETECTION_LOG_SEND=1 python pruned_yolo_cctv.py
+DETECTION_BACKEND_URL=https://detection-demo-production.up.railway.app DETECTION_TRANSPORT=websocket DETECTION_CONTROL_ENABLED=1 DETECTION_LOG_SEND=1 DETECTION_SEND_INTERVAL=0.12 DETECTION_FRAME_WIDTH=0 DETECTION_JPEG_QUALITY=30 python main/pruned_yolo_cctv.py
