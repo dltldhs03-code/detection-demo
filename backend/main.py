@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from urllib.parse import quote, urlencode, urljoin
 from urllib.request import urlopen
 
+import cv2
+import numpy as np
 from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 from flask_sock import Sock
@@ -37,6 +39,11 @@ HISTORY_LIMIT = 36
 traffic_up_history = deque([0], maxlen=HISTORY_LIMIT)
 traffic_down_history = deque([0], maxlen=HISTORY_LIMIT)
 accident_probability_history = deque([0], maxlen=HISTORY_LIMIT)
+
+UPBOUND_LABEL = 0
+DOWNBOUND_LABEL = 1
+CONGESTION_OVERLAP_THRESHOLD = 0.8
+CONGESTION_CENTER_MOVEMENT_THRESHOLD = 20.0
 
 CCTV_ITEMS = [
     "[경부선] 천안호두휴게소",
@@ -100,6 +107,194 @@ STATIC_CCTV_RECORDS = [
 cctv_records = []
 cctv_records_source = "not_loaded"
 cctv_records_error = ""
+previous_direction_centers_by_stream = {}
+
+
+def _json_field(value, default):
+    if value is None or value == "":
+        return default
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def _safe_int(value, default=0):
+    try:
+        if value is None or value == "":
+            return default
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value, default=0.0):
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_bbox(value):
+    bbox = _json_field(value, [0, 0, 0, 0])
+    if not isinstance(bbox, (list, tuple)) or len(bbox) < 4:
+        return [0, 0, 0, 0]
+    return [_safe_float(item) for item in bbox[:4]]
+
+
+def _normalize_detection(item):
+    detection = dict(item or {})
+    detection["class_name"] = str(detection.get("class_name", detection.get("name", "none")))
+    detection["confidence"] = _safe_float(detection.get("confidence"), 0.0)
+    detection["bbox"] = _normalize_bbox(detection.get("bbox", [0, 0, 0, 0]))
+
+    if detection.get("direction_label") is not None:
+        detection["direction_label"] = _safe_int(detection.get("direction_label"), -1)
+    if detection.get("track_id") is not None:
+        detection["track_id"] = _safe_int(detection.get("track_id"), None)
+
+    center = detection.get("center")
+    if center is None:
+        x1, y1, x2, y2 = detection["bbox"]
+        center = [(x1 + x2) / 2.0, (y1 + y2) / 2.0]
+    if not isinstance(center, (list, tuple)) or len(center) < 2:
+        center = [0.0, 0.0]
+    detection["center"] = [_safe_float(center[0]), _safe_float(center[1])] if len(center) >= 2 else [0.0, 0.0]
+    return detection
+
+
+def _normalize_rois(value):
+    rois = _json_field(value, [])
+    normalized = []
+    for roi in rois or []:
+        if isinstance(roi, dict):
+            points = roi.get("points", [])
+            label = roi.get("label", -1)
+        elif isinstance(roi, (list, tuple)) and len(roi) >= 2:
+            points, label = roi[0], roi[1]
+        else:
+            continue
+        normalized.append(
+            {
+                "points": [[_safe_int(x), _safe_int(y)] for x, y in points],
+                "label": _safe_int(label, -1),
+            }
+        )
+    return normalized
+
+
+def _build_roi_mask(frame_shape, rois, label):
+    height, width = frame_shape[:2]
+    mask = np.zeros((height, width), dtype=np.uint8)
+    for roi in rois:
+        if int(roi.get("label", -1)) != int(label):
+            continue
+        polygon = np.array(roi.get("points", []), dtype=np.int32)
+        if len(polygon) >= 3:
+            cv2.fillPoly(mask, [polygon], 1)
+    return mask
+
+
+def _calculate_roi_coverage_ratio(frame_shape, detections, rois, label):
+    if not rois or frame_shape[0] <= 0 or frame_shape[1] <= 0:
+        return 0.0
+
+    roi_mask = _build_roi_mask(frame_shape, rois, label)
+    roi_area = int(np.count_nonzero(roi_mask))
+    if roi_area <= 0:
+        return 0.0
+
+    detection_mask = np.zeros_like(roi_mask)
+    for detection in detections:
+        if detection.get("direction_label") != int(label):
+            continue
+        x1, y1, x2, y2 = [_safe_int(value) for value in detection.get("bbox", [0, 0, 0, 0])]
+        x1 = max(0, min(x1, detection_mask.shape[1]))
+        x2 = max(0, min(x2, detection_mask.shape[1]))
+        y1 = max(0, min(y1, detection_mask.shape[0]))
+        y2 = max(0, min(y2, detection_mask.shape[0]))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        detection_mask[y1:y2, x1:x2] = 1
+
+    overlap_pixels = int(np.count_nonzero(cv2.bitwise_and(roi_mask, detection_mask)))
+    return min(1.0, overlap_pixels / float(roi_area))
+
+
+def _calculate_mean_center_movement(current_detections, previous_centers):
+    if not current_detections or not previous_centers:
+        return None
+
+    previous_by_track_id = {
+        int(track_id): tuple(center)
+        for track_id, center in (previous_centers or {}).items()
+        if track_id is not None and center is not None
+    }
+    movements = []
+    for detection in current_detections:
+        track_id = detection.get("track_id")
+        center = detection.get("center")
+        if center is None or track_id is None:
+            continue
+        previous_center = previous_by_track_id.get(int(track_id))
+        if previous_center is None:
+            continue
+        movements.append(float(np.hypot(center[0] - previous_center[0], center[1] - previous_center[1])))
+
+    if not movements:
+        return None
+    return float(sum(movements) / len(movements))
+
+
+def _compute_congestion(detections, rois, frame_width, frame_height, selected_name):
+    frame_shape = (int(frame_height or 0), int(frame_width or 0), 3)
+    previous_state = previous_direction_centers_by_stream.get(selected_name, {"up": {}, "down": {}})
+    current_state = {"up": {}, "down": {}}
+    congestion = {}
+
+    for direction_name, label in (("up", UPBOUND_LABEL), ("down", DOWNBOUND_LABEL)):
+        direction_detections = [item for item in detections if item.get("direction_label") == int(label)]
+        current_state[direction_name] = {
+            int(item["track_id"]): tuple(item["center"])
+            for item in direction_detections
+            if item.get("track_id") is not None and item.get("center")
+        }
+        coverage_ratio = _calculate_roi_coverage_ratio(frame_shape, direction_detections, rois, label)
+        mean_movement = _calculate_mean_center_movement(
+            direction_detections,
+            previous_state.get(direction_name, {}),
+        )
+        congestion[direction_name] = {
+            "count": len(direction_detections),
+            "roi_coverage_ratio": round(float(coverage_ratio), 4),
+            "mean_center_movement": round(float(mean_movement), 4) if mean_movement is not None else None,
+            "is_congested": bool(
+                coverage_ratio >= CONGESTION_OVERLAP_THRESHOLD
+                and mean_movement is not None
+                and mean_movement <= CONGESTION_CENTER_MOVEMENT_THRESHOLD
+            ),
+        }
+
+    previous_direction_centers_by_stream[selected_name] = current_state
+    return congestion
+
+
+def _calculate_accident_probability(traffic_count, traffic_up, traffic_down, congestion):
+    if traffic_count <= 0:
+        return 0, "-"
+    up_congestion = bool(congestion.get("up", {}).get("is_congested", False))
+    down_congestion = bool(congestion.get("down", {}).get("is_congested", False))
+    imbalance = abs(int(traffic_up) - int(traffic_down))
+    congestion_bonus = 35 * int(up_congestion) + 35 * int(down_congestion)
+    probability = int(min(99, 12 + (int(traffic_count) * 8) + (imbalance * 3) + congestion_bonus))
+    if up_congestion and down_congestion:
+        return probability, "양방향 복잡"
+    if up_congestion:
+        return probability, "상행 복잡"
+    if down_congestion:
+        return probability, "하행 복잡"
+    return probability, f"{probability}%"
 
 
 def _calculate_metrics(detection):
@@ -112,23 +307,41 @@ def _calculate_metrics(detection):
             "accident_status": "-",
         }
 
-    confidence = float(detection.get("confidence", 0) or 0)
-    traffic_count = int(
+    traffic_count = _safe_int(
         detection.get("traffic_count")
         or detection.get("detection_count")
-        or max(1, round(confidence * 10))
+        or len(detection.get("detections") or []),
+        0,
     )
-    traffic_up = round(traffic_count * 0.55)
-    traffic_down = max(0, traffic_count - traffic_up)
-    imbalance = abs(traffic_up - traffic_down)
-    accident_probability = min(99, round(12 + traffic_count * 8 + imbalance * 3))
+    if traffic_count <= 0:
+        traffic_count = max(1, round(_safe_float(detection.get("confidence"), 0.0) * 10))
+
+    traffic_up = _safe_int(detection.get("traffic_up"), -1)
+    traffic_down = _safe_int(detection.get("traffic_down"), -1)
+    if traffic_up < 0 or traffic_down < 0:
+        detections = detection.get("detections") or []
+        traffic_up = sum(1 for item in detections if item.get("direction_label") == UPBOUND_LABEL)
+        traffic_down = sum(1 for item in detections if item.get("direction_label") == DOWNBOUND_LABEL)
+    if traffic_up == 0 and traffic_down == 0 and traffic_count > 0:
+        traffic_up = round(traffic_count * 0.55)
+        traffic_down = max(0, traffic_count - traffic_up)
+
+    accident_probability = _safe_int(detection.get("accident_probability"), -1)
+    accident_status = detection.get("accident_status")
+    if accident_probability < 0 or not accident_status:
+        accident_probability, accident_status = _calculate_accident_probability(
+            traffic_count,
+            traffic_up,
+            traffic_down,
+            detection.get("congestion") or {},
+        )
 
     return {
         "traffic_count": traffic_count,
         "traffic_up": traffic_up,
         "traffic_down": traffic_down,
         "accident_probability": accident_probability,
-        "accident_status": f"{accident_probability}%",
+        "accident_status": accident_status,
     }
 
 
@@ -169,13 +382,15 @@ def _get_control_state():
 
 def _get_status():
     _ensure_cctv_records()
+    detection = latest_detection or {}
     metrics = _calculate_metrics(latest_detection)
     selected_cctv = cctv_records[selected_index]
     frame_url = _latest_frame_url()
-    remote_selected_name = (latest_detection or {}).get("selected_name")
-    remote_selected_index = (latest_detection or {}).get("selected_index")
-    remote_stream_status = (latest_detection or {}).get("stream_status")
-    remote_roi_path = (latest_detection or {}).get("roi_path")
+    remote_selected_name = detection.get("selected_name")
+    remote_selected_index = detection.get("selected_index")
+    remote_stream_status = detection.get("stream_status")
+    remote_roi_path = detection.get("roi_path")
+    congestion = detection.get("congestion") or {}
     return {
         "selected_index": remote_selected_index if remote_selected_index is not None else selected_index,
         "selected_name": remote_selected_name or selected_cctv["name"],
@@ -187,10 +402,12 @@ def _get_status():
         "accident_probability": metrics["accident_probability"],
         "accident_probability_history": list(accident_probability_history),
         "accident_status": metrics["accident_status"],
+        "congestion_up": bool(congestion.get("up", {}).get("is_congested", False)),
+        "congestion_down": bool(congestion.get("down", {}).get("is_congested", False)),
         "stream_status": remote_stream_status or ("연결됨" if latest_detection else "준비 중"),
         "player_url": _latest_frame_url() or "/video_feed",
-        "cctv_url": selected_cctv.get("cctv_url", ""),
-        "stream_url": selected_cctv.get("stream_url", ""),
+        "cctv_url": detection.get("cctv_url") or selected_cctv.get("cctv_url", ""),
+        "stream_url": detection.get("stream_url") or selected_cctv.get("stream_url", ""),
         "cctv_source": cctv_records_source,
         "cctv_error": cctv_records_error,
         "cctv_count": len(cctv_records),
@@ -198,7 +415,7 @@ def _get_status():
         "control_selected_name": selected_cctv["name"],
         "selection_version": selection_version,
         "yolo_enabled": latest_detection is not None,
-        "roi_enabled": False,
+        "roi_enabled": bool(detection.get("roi_enabled", False)),
         "roi_path": remote_roi_path or "Railway remote demo backend",
         "latest_detection": latest_detection,
         "frame_url": frame_url,
@@ -227,6 +444,7 @@ def _get_viewer_message(include_image=True):
     detection = latest_detection or {}
     metrics = _calculate_metrics(detection)
     frame_url = _latest_frame_url()
+    congestion = detection.get("congestion") or {}
     return {
         "type": "frame",
         "selected_index": detection.get("selected_index", selected_index),
@@ -239,13 +457,17 @@ def _get_viewer_message(include_image=True):
         "accident_probability": metrics["accident_probability"],
         "accident_probability_history": list(accident_probability_history),
         "accident_status": metrics["accident_status"],
+        "congestion_up": bool(congestion.get("up", {}).get("is_congested", False)),
+        "congestion_down": bool(congestion.get("down", {}).get("is_congested", False)),
         "stream_status": detection.get("stream_status") or ("연결됨" if latest_detection else "준비 중"),
         "player_url": frame_url or "/video_feed",
-        "cctv_url": "",
-        "stream_url": "",
+        "cctv_url": detection.get("cctv_url", ""),
+        "stream_url": detection.get("stream_url", ""),
         "cctv_source": cctv_records_source,
         "cctv_error": cctv_records_error,
         "cctv_count": len(cctv_records) or len(STATIC_CCTV_RECORDS),
+        "control_selected_index": selected_index,
+        "selection_version": selection_version,
         "yolo_enabled": latest_detection is not None,
         "roi_enabled": bool(detection.get("roi_enabled")),
         "roi_path": detection.get("roi_path") or "Railway remote demo backend",
@@ -309,21 +531,46 @@ def _parse_detection_payload():
 
 
 def _parse_bbox(value):
-    if isinstance(value, str):
-        return json.loads(value)
-    return value
+    return _normalize_bbox(value)
 
 
 def _parse_detections(value):
-    if not value:
-        return []
-    if isinstance(value, str):
-        return json.loads(value)
-    return value
+    detections = _json_field(value, [])
+    return [_normalize_detection(item) for item in detections or []]
 
 
 def _truthy(value):
     return str(value).lower() in {"1", "true", "yes"}
+
+
+def _infer_frame_size(frame_bytes):
+    if not frame_bytes:
+        return 0, 0
+    try:
+        image = cv2.imdecode(np.frombuffer(frame_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            return 0, 0
+        height, width = image.shape[:2]
+        return int(width), int(height)
+    except Exception:
+        return 0, 0
+
+
+def _fallback_congestion(traffic_up, traffic_down):
+    return {
+        "up": {
+            "count": int(traffic_up),
+            "roi_coverage_ratio": 0.0,
+            "mean_center_movement": None,
+            "is_congested": False,
+        },
+        "down": {
+            "count": int(traffic_down),
+            "roi_coverage_ratio": 0.0,
+            "mean_center_movement": None,
+            "is_congested": False,
+        },
+    }
 
 
 def _update_latest_detection(data, frame_bytes=None, frame_mime="image/jpeg"):
@@ -339,30 +586,72 @@ def _update_latest_detection(data, frame_bytes=None, frame_mime="image/jpeg"):
         detections = [
             {
                 "class_name": data["class_name"],
-                "confidence": float(data["confidence"]),
+                "confidence": _safe_float(data["confidence"]),
                 "bbox": _parse_bbox(data["bbox"]),
             }
         ]
+        detections = [_normalize_detection(item) for item in detections]
 
     best_detection = max(
         detections,
-        key=lambda item: float(item.get("confidence", 0) or 0),
+        key=lambda item: _safe_float(item.get("confidence"), 0.0),
         default={"class_name": "none", "confidence": 0.0, "bbox": [0, 0, 0, 0]},
     )
-    traffic_count = int(data.get("traffic_count") or len(detections))
+    rois = _normalize_rois(data.get("rois"))
+    frame_width = _safe_int(data.get("frame_width"), 0)
+    frame_height = _safe_int(data.get("frame_height"), 0)
+    if (frame_width <= 0 or frame_height <= 0) and frame_bytes:
+        frame_width, frame_height = _infer_frame_size(frame_bytes)
+
+    selected_name = data.get("selected_name") or _get_hot_selected_name(data)
+    traffic_count = _safe_int(data.get("traffic_count"), len(detections))
+    traffic_up = _safe_int(data.get("traffic_up"), -1)
+    traffic_down = _safe_int(data.get("traffic_down"), -1)
+    if traffic_up < 0 or traffic_down < 0:
+        traffic_up = sum(1 for item in detections if item.get("direction_label") == UPBOUND_LABEL)
+        traffic_down = sum(1 for item in detections if item.get("direction_label") == DOWNBOUND_LABEL)
+    if traffic_up == 0 and traffic_down == 0 and traffic_count > 0:
+        traffic_up = round(traffic_count * 0.55)
+        traffic_down = max(0, traffic_count - traffic_up)
+
+    incoming_congestion = _json_field(data.get("congestion"), None)
+    if incoming_congestion:
+        congestion = incoming_congestion
+    elif rois and frame_width > 0 and frame_height > 0:
+        congestion = _compute_congestion(detections, rois, frame_width, frame_height, selected_name)
+    else:
+        congestion = _fallback_congestion(traffic_up, traffic_down)
+    accident_probability, accident_status = _calculate_accident_probability(
+        traffic_count,
+        traffic_up,
+        traffic_down,
+        congestion,
+    )
     timestamp = data.get("timestamp") or datetime.now(timezone.utc).isoformat()
 
     latest_detection = {
         "class_name": best_detection.get("class_name", "none"),
-        "confidence": float(best_detection.get("confidence", 0) or 0),
+        "confidence": _safe_float(best_detection.get("confidence"), 0.0),
         "bbox": best_detection.get("bbox", [0, 0, 0, 0]),
         "detections": detections,
+        "rois": rois,
         "detection_count": len(detections),
+        "frame_id": _safe_int(data.get("frame_id"), latest_frame_sequence + 1),
+        "frame_width": frame_width,
+        "frame_height": frame_height,
         "traffic_count": traffic_count,
-        "selected_name": data.get("selected_name"),
+        "traffic_up": traffic_up,
+        "traffic_down": traffic_down,
+        "congestion": congestion,
+        "accident_probability": accident_probability,
+        "accident_status": accident_status,
+        "selected_name": selected_name,
         "selected_index": data.get("selected_index"),
+        "cctv_url": data.get("cctv_url", ""),
+        "stream_url": data.get("stream_url", ""),
+        "player_url": data.get("player_url", ""),
         "stream_status": data.get("stream_status"),
-        "roi_enabled": _truthy(data.get("roi_enabled", "")),
+        "roi_enabled": _truthy(data.get("roi_enabled", "")) or bool(rois),
         "roi_path": data.get("roi_path"),
         "timestamp": timestamp,
     }
@@ -377,10 +666,6 @@ def _update_latest_detection(data, frame_bytes=None, frame_mime="image/jpeg"):
         latest_frame_base64 = image_base64
         latest_frame_mime = data.get("image_mime", "image/jpeg")
         latest_frame_bytes = _decode_base64_image(latest_frame_base64)
-    else:
-        latest_frame_bytes = None
-        latest_frame_mime = "image/jpeg"
-        latest_frame_base64 = ""
 
     latest_detection["frame_url"] = _latest_frame_url()
     latest_frame_sequence += 1

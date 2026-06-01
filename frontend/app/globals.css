@@ -117,6 +117,11 @@ body {
   width: 100%;
 }
 
+.frame-stage {
+  position: relative;
+  width: 100%;
+}
+
 .frame-waiting-badge {
   position: absolute;
   left: 16px;
@@ -132,20 +137,28 @@ body {
 }
 
 .video-card video,
-.video-card img {
+.video-card img,
+.frame-stage canvas,
+.frame-stage .video-placeholder {
   display: block;
   width: 100%;
   aspect-ratio: 16 / 9;
+  border-radius: 14px;
+}
+
+.video-card img {
   object-fit: contain;
   background: #121822;
-  border-radius: 14px;
+}
+
+.frame-stage canvas {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
 }
 
 .video-placeholder {
   position: relative;
-  display: block;
-  width: 100%;
-  aspect-ratio: 16 / 9;
   overflow: hidden;
   background:
     linear-gradient(90deg, rgba(93, 163, 255, 0.08) 1px, transparent 1px),
@@ -254,6 +267,55 @@ body {
   display: grid;
   gap: 18px;
   margin-top: 18px;
+}
+
+.congestion-strip {
+  margin-top: 18px;
+  padding: 18px 22px;
+}
+
+.congestion-head h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.congestion-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 10px;
+}
+
+.congestion-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-radius: 18px;
+  border: 1px solid rgba(94, 110, 138, 0.45);
+  background: rgba(24, 29, 41, 0.82);
+}
+
+.congestion-item.upbound {
+  background:
+    linear-gradient(180deg, rgba(24, 79, 73, 0.35), rgba(24, 29, 41, 0.92));
+}
+
+.congestion-item.downbound {
+  background:
+    linear-gradient(180deg, rgba(110, 68, 17, 0.35), rgba(24, 29, 41, 0.92));
+}
+
+.congestion-label {
+  color: var(--muted);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.congestion-value {
+  font-size: clamp(1.5rem, 2.5vw, 2.2rem);
+  line-height: 1;
 }
 
 .metric-panel {
@@ -456,7 +518,8 @@ body {
   }
 
   .traffic-charts,
-  .accident-body {
+  .accident-body,
+  .congestion-grid {
     grid-template-columns: 1fr;
   }
 

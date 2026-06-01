@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || buildViewerWsUrl(API_URL);
-const STATUS_REFRESH_INTERVAL_MS = 500;
+const STATUS_REFRESH_INTERVAL_MS = 1000;
 const CHART_REFRESH_INTERVAL_MS = 1000;
-const STATUS_RENDER_INTERVAL_MS = 250;
+const SYNC_DELAY_MS = Number(process.env.NEXT_PUBLIC_SYNC_DELAY_MS || 250);
 
 export default function HomePage() {
   const [status, setStatus] = useState(null);
@@ -16,20 +16,25 @@ export default function HomePage() {
   const [frameSrc, setFrameSrc] = useState("");
   const [wsState, setWsState] = useState("connecting");
 
+  const frameImgRef = useRef(null);
+  const overlayCanvasRef = useRef(null);
   const trafficUpChartRef = useRef(null);
   const trafficDownChartRef = useRef(null);
   const accidentProbabilityChartRef = useRef(null);
-  const frameImgRef = useRef(null);
   const wsRef = useRef(null);
-  const wsConnectedRef = useRef(false);
   const shouldReconnectRef = useRef(true);
   const reconnectTimerRef = useRef(null);
-  const lastFrameSequenceRef = useRef(0);
+  const detectionQueueRef = useRef([]);
+  const syncTimerRef = useRef(null);
+  const lastAppliedFrameIdRef = useRef(-1);
   const lastChartDrawAtRef = useRef(0);
   const chartTimerRef = useRef(null);
-  const lastStatusRenderAtRef = useRef(0);
-  const statusRenderTimerRef = useRef(null);
-  const pendingStatusRef = useRef(null);
+
+  function applyStatus(nextStatus) {
+    setStatus(nextStatus);
+    const nextFrameUrl = normalizeBackendUrl(nextStatus.frame_url || nextStatus.player_url || "");
+    if (nextFrameUrl) setFrameSrc(nextFrameUrl);
+  }
 
   async function refreshStatus() {
     if (!API_URL) {
@@ -40,14 +45,9 @@ export default function HomePage() {
 
     try {
       const response = await fetch(`${API_URL}/api/status`, { cache: "no-store" });
-      if (!response.ok) {
-        throw new Error(`Backend returned ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`Backend returned ${response.status}`);
       const data = await response.json();
-      setStatus((previous) => ({ ...(previous || {}), ...data }));
-      if (!wsConnectedRef.current && data.frame_url) {
-        setFrameSrc(normalizeBackendUrl(data.frame_url));
-      }
+      applyStatus(data);
       setError("");
       setLoading(false);
     } catch (err) {
@@ -58,7 +58,6 @@ export default function HomePage() {
 
   async function refreshCctvs() {
     if (!API_URL) return;
-
     try {
       const response = await fetch(`${API_URL}/api/cctvs`, { cache: "no-store" });
       if (!response.ok) return;
@@ -71,17 +70,16 @@ export default function HomePage() {
 
   async function selectCctv(index) {
     if (!API_URL) return;
-
     try {
-      const response = await fetch(`${API_URL}/api/select/${index}`, {
-        method: "POST",
-      });
+      const response = await fetch(`${API_URL}/api/select/${index}`, { method: "POST" });
       const data = await response.json();
       if (!response.ok || !data.ok) {
         alert(data.error || "스트림 전환에 실패했습니다.");
         return;
       }
-      setStatus(data.status);
+      detectionQueueRef.current = [];
+      lastAppliedFrameIdRef.current = -1;
+      applyStatus(data.status);
       await refreshCctvs();
     } catch (err) {
       alert(`스트림 전환에 실패했습니다: ${err.message}`);
@@ -91,38 +89,34 @@ export default function HomePage() {
   useEffect(() => {
     refreshStatus();
     refreshCctvs();
-    const intervalId = setInterval(() => {
-      if (!wsConnectedRef.current) refreshStatus();
-    }, STATUS_REFRESH_INTERVAL_MS);
+    const intervalId = setInterval(refreshStatus, STATUS_REFRESH_INTERVAL_MS);
     return () => clearInterval(intervalId);
   }, []);
 
   useEffect(() => {
-    if (!status) return;
-    scheduleChartRender(status);
-  }, [status]);
-
-  useEffect(() => {
     connectViewerWebSocket();
+    startSyncLoop();
     return () => {
       shouldReconnectRef.current = false;
-      wsConnectedRef.current = false;
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (syncTimerRef.current) clearInterval(syncTimerRef.current);
       if (chartTimerRef.current) clearTimeout(chartTimerRef.current);
-      if (statusRenderTimerRef.current) clearTimeout(statusRenderTimerRef.current);
       if (wsRef.current) wsRef.current.close();
     };
   }, []);
 
   useEffect(() => {
-    function handleResize() {
-      if (!status) return;
-      lastChartDrawAtRef.current = 0;
-      scheduleChartRender(status);
-    }
+    if (!status) return;
+    scheduleChartRender(status);
+    drawOverlay(status);
+  }, [status, frameSrc]);
 
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
+  useEffect(() => {
+    const onResize = () => {
+      if (status) drawOverlay(status);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
   }, [status]);
 
   function connectViewerWebSocket() {
@@ -137,11 +131,7 @@ export default function HomePage() {
       setWsState("connecting");
 
       ws.onopen = () => {
-        wsConnectedRef.current = true;
         setWsState("connected");
-        if (API_URL) {
-          setFrameSrc(`${API_URL}/video_feed?stream=${Date.now()}`);
-        }
         setError("");
       };
 
@@ -149,35 +139,24 @@ export default function HomePage() {
         try {
           const message = JSON.parse(event.data);
           if (message.type === "ping") return;
-
-          const sequence = Number(message.frame_sequence || 0);
-          if (sequence && sequence < lastFrameSequenceRef.current) return;
-          if (sequence) lastFrameSequenceRef.current = sequence;
-
-          const { image_base64: _imageBase64, ...statusMessage } = message;
-          queueStatusRender(statusMessage);
-          setLoading(false);
+          detectionQueueRef.current.push(message);
+          detectionQueueRef.current.sort((a, b) => getFrameOrder(a) - getFrameOrder(b));
           setError("");
+          setLoading(false);
         } catch (err) {
           setError(`WebSocket message error: ${err.message}`);
         }
       };
 
       ws.onclose = () => {
-        wsConnectedRef.current = false;
         setWsState("fallback");
         if (shouldReconnectRef.current) {
           reconnectTimerRef.current = setTimeout(connectViewerWebSocket, 1500);
         }
       };
 
-      ws.onerror = () => {
-        wsConnectedRef.current = false;
-        setWsState("fallback");
-        ws.close();
-      };
+      ws.onerror = () => ws.close();
     } catch (_err) {
-      wsConnectedRef.current = false;
       setWsState("fallback");
       if (shouldReconnectRef.current) {
         reconnectTimerRef.current = setTimeout(connectViewerWebSocket, 1500);
@@ -185,49 +164,40 @@ export default function HomePage() {
     }
   }
 
-  function queueStatusRender(nextStatus) {
-    pendingStatusRef.current = {
-      ...(pendingStatusRef.current || {}),
-      ...nextStatus,
-    };
+  function startSyncLoop() {
+    syncTimerRef.current = setInterval(() => {
+      const queue = detectionQueueRef.current;
+      if (!queue.length) return;
 
-    const elapsed = Date.now() - lastStatusRenderAtRef.current;
-    if (elapsed >= STATUS_RENDER_INTERVAL_MS) {
-      flushStatusRender();
-      return;
-    }
+      const targetTime = Date.now() - SYNC_DELAY_MS;
+      let chosenIndex = -1;
+      for (let index = 0; index < queue.length; index += 1) {
+        const timestamp = Date.parse(queue[index]?.latest_detection?.timestamp || queue[index]?.timestamp || "");
+        if (!Number.isFinite(timestamp)) {
+          chosenIndex = index;
+          continue;
+        }
+        if (timestamp <= targetTime) chosenIndex = index;
+        else break;
+      }
+      if (chosenIndex < 0) return;
 
-    if (statusRenderTimerRef.current) return;
-    statusRenderTimerRef.current = setTimeout(
-      flushStatusRender,
-      STATUS_RENDER_INTERVAL_MS - elapsed,
-    );
-  }
-
-  function flushStatusRender() {
-    if (statusRenderTimerRef.current) {
-      clearTimeout(statusRenderTimerRef.current);
-      statusRenderTimerRef.current = null;
-    }
-
-    const nextStatus = pendingStatusRef.current;
-    if (!nextStatus) return;
-
-    pendingStatusRef.current = null;
-    lastStatusRenderAtRef.current = Date.now();
-    setStatus((previous) => ({ ...(previous || {}), ...nextStatus }));
+      const nextStatus = queue.splice(0, chosenIndex + 1).pop();
+      const frameId = getFrameOrder(nextStatus);
+      if (frameId <= lastAppliedFrameIdRef.current) return;
+      lastAppliedFrameIdRef.current = frameId;
+      applyStatus(nextStatus);
+    }, 40);
   }
 
   function scheduleChartRender(nextStatus) {
     const elapsed = Date.now() - lastChartDrawAtRef.current;
-
     if (elapsed >= CHART_REFRESH_INTERVAL_MS) {
       if (chartTimerRef.current) clearTimeout(chartTimerRef.current);
       chartTimerRef.current = null;
       drawCharts(nextStatus);
       return;
     }
-
     if (chartTimerRef.current) return;
     chartTimerRef.current = setTimeout(() => {
       chartTimerRef.current = null;
@@ -248,29 +218,75 @@ export default function HomePage() {
     });
   }
 
-  const viewStatus = status || buildEmptyStatus(loading, error);
-  const frameUrl = frameSrc || normalizeBackendUrl(viewStatus.frame_url || "");
-  const streamStatusText = `${error || viewStatus.stream_status} · WS ${formatWsState(wsState)}`;
+  function drawOverlay(nextStatus) {
+    const canvas = overlayCanvasRef.current;
+    const image = frameImgRef.current;
+    if (!canvas || !image) return;
+    const ctx = fitOverlayCanvas(canvas, image);
+    if (!ctx) return;
+
+    const rect = image.getBoundingClientRect();
+    ctx.clearRect(0, 0, rect.width, rect.height);
+
+    const latest = nextStatus?.latest_detection || {};
+    const detections = latest.detections || [];
+    const rois = latest.rois || [];
+    const sourceWidth = Math.max(1, Number(latest.frame_width) || image.naturalWidth || 1);
+    const sourceHeight = Math.max(1, Number(latest.frame_height) || image.naturalHeight || 1);
+    const scaleX = rect.width / sourceWidth;
+    const scaleY = rect.height / sourceHeight;
+
+    rois.forEach((roi) => {
+      const points = roi.points || [];
+      if (!points.length) return;
+      const color = getDirectionColor(Number(roi.label));
+      ctx.beginPath();
+      points.forEach(([x, y], index) => {
+        const sx = x * scaleX;
+        const sy = y * scaleY;
+        if (index === 0) ctx.moveTo(sx, sy);
+        else ctx.lineTo(sx, sy);
+      });
+      ctx.closePath();
+      ctx.fillStyle = `${color}24`;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.fill();
+      ctx.stroke();
+    });
+
+    detections.forEach((detection) => {
+      const [x1, y1, x2, y2] = detection.bbox || [0, 0, 0, 0];
+      const color = getDirectionColor(Number(detection.direction_label));
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(
+        x1 * scaleX,
+        y1 * scaleY,
+        Math.max(0, (x2 - x1) * scaleX),
+        Math.max(0, (y2 - y1) * scaleY),
+      );
+    });
+  }
+
+  const viewStatus = useMemo(() => status || buildEmptyStatus(loading, error), [status, loading, error]);
+  const imageSrc = frameSrc || normalizeBackendUrl(viewStatus.frame_url || viewStatus.player_url || "");
+  const streamStatusText = `${error || viewStatus.stream_status} · WS ${formatWsState(wsState)} · sync ${SYNC_DELAY_MS}ms`;
 
   return (
     <main className="page">
       <header className="topbar">
         <div>
           <p className="eyebrow">Selected CCTV</p>
-          <h1 id="selected-name">{viewStatus.selected_name}</h1>
+          <h1>{viewStatus.selected_name}</h1>
         </div>
         <div className="status">
           <span className="status-label">Stream Status</span>
-          <strong id="stream-status">{streamStatusText}</strong>
-          <span
-            className={`status-chip ${viewStatus.yolo_enabled ? "is-on" : "is-off"}`}
-            id="yolo-chip"
-          >
+          <strong>{streamStatusText}</strong>
+          <span className={`status-chip ${viewStatus.yolo_enabled ? "is-on" : "is-off"}`}>
             {viewStatus.yolo_enabled ? "YOLO ON" : "YOLO OFF"}
           </span>
-          <p className="status-meta" id="roi-path">
-            {viewStatus.roi_path}
-          </p>
+          <p className="status-meta">{viewStatus.roi_path}</p>
         </div>
       </header>
 
@@ -280,12 +296,44 @@ export default function HomePage() {
             <h2>Detection Screen</h2>
           </div>
           <div className="video-card">
-            <LatestFrame
-              frameSrc={frameUrl || (API_URL ? `${API_URL}/video_feed` : "")}
-              imageRef={frameImgRef}
-              isWaiting={!viewStatus.yolo_enabled}
-            />
+            <div className="frame-stage">
+              {imageSrc ? (
+                <img
+                  id="video-feed"
+                  ref={frameImgRef}
+                  src={imageSrc}
+                  alt="Live YOLO detection frame"
+                  onLoad={() => drawOverlay(viewStatus)}
+                />
+              ) : (
+                <div className="video-placeholder">
+                  <span className="video-placeholder-title">Detection Screen</span>
+                  <span className="video-placeholder-message">YOLO sender 대기 중</span>
+                  <div className="demo-bbox">
+                    <span>waiting</span>
+                  </div>
+                </div>
+              )}
+              <canvas ref={overlayCanvasRef} aria-hidden="true" />
+              {!viewStatus.yolo_enabled && <div className="frame-waiting-badge">YOLO sender 대기 중</div>}
+            </div>
           </div>
+
+          <article className="metric-panel congestion-strip">
+            <div className="section-head congestion-head">
+              <h2>Traffic Status</h2>
+            </div>
+            <div className="congestion-grid">
+              <div className="congestion-item downbound">
+                <span className="congestion-label">하행 :</span>
+                <strong className="congestion-value">{viewStatus.congestion_down ? "복잡" : "원활"}</strong>
+              </div>
+              <div className="congestion-item upbound">
+                <span className="congestion-label">상행 :</span>
+                <strong className="congestion-value">{viewStatus.congestion_up ? "복잡" : "원활"}</strong>
+              </div>
+            </div>
+          </article>
 
           <section className="analytics">
             <article className="metric-panel traffic-panel">
@@ -296,7 +344,7 @@ export default function HomePage() {
                 </div>
                 <div className="traffic-total">
                   <span>현재 총 교통량</span>
-                  <strong id="traffic-count">{viewStatus.traffic_count}</strong>
+                  <strong>{viewStatus.traffic_count}</strong>
                 </div>
               </div>
 
@@ -307,17 +355,9 @@ export default function HomePage() {
                       <p className="chart-kicker">Downbound</p>
                       <h4>하행 교통량</h4>
                     </div>
-                    <strong className="chart-value" id="traffic-down">
-                      {viewStatus.traffic_down}
-                    </strong>
+                    <strong className="chart-value">{viewStatus.traffic_down}</strong>
                   </div>
-                  <canvas
-                    id="traffic-down-chart"
-                    className="traffic-chart"
-                    width="640"
-                    height="240"
-                    ref={trafficDownChartRef}
-                  />
+                  <canvas className="traffic-chart" width="640" height="240" ref={trafficDownChartRef} />
                 </section>
 
                 <section className="traffic-chart-card upbound">
@@ -326,17 +366,9 @@ export default function HomePage() {
                       <p className="chart-kicker">Upbound</p>
                       <h4>상행 교통량</h4>
                     </div>
-                    <strong className="chart-value" id="traffic-up">
-                      {viewStatus.traffic_up}
-                    </strong>
+                    <strong className="chart-value">{viewStatus.traffic_up}</strong>
                   </div>
-                  <canvas
-                    id="traffic-up-chart"
-                    className="traffic-chart"
-                    width="640"
-                    height="240"
-                    ref={trafficUpChartRef}
-                  />
+                  <canvas className="traffic-chart" width="640" height="240" ref={trafficUpChartRef} />
                 </section>
               </div>
             </article>
@@ -347,37 +379,23 @@ export default function HomePage() {
                   <p className="metric-label">Accident Risk</p>
                   <h3>사고 발생 확률</h3>
                 </div>
-                <div className="probability-badge" id="accident-status">
-                  {viewStatus.accident_status}
-                </div>
+                <div className="probability-badge">{viewStatus.accident_status}</div>
               </div>
 
               <div className="accident-body">
                 <div className="probability-block">
                   <p className="metric-note">교통량 기반 추정치</p>
                   <div className="probability-value">
-                    <strong id="accident-probability">
-                      {viewStatus.accident_probability}
-                    </strong>
+                    <strong>{viewStatus.accident_probability}</strong>
                     <span>%</span>
                   </div>
                   <div className="probability-meter">
-                    <div
-                      className="probability-fill"
-                      id="accident-probability-fill"
-                      style={{ width: `${viewStatus.accident_probability}%` }}
-                    />
+                    <div className="probability-fill" style={{ width: `${viewStatus.accident_probability}%` }} />
                   </div>
                 </div>
 
                 <div className="accident-chart-wrap">
-                  <canvas
-                    id="accident-probability-chart"
-                    className="traffic-chart"
-                    width="640"
-                    height="240"
-                    ref={accidentProbabilityChartRef}
-                  />
+                  <canvas className="traffic-chart" width="640" height="240" ref={accidentProbabilityChartRef} />
                 </div>
               </div>
             </article>
@@ -389,18 +407,15 @@ export default function HomePage() {
             <h2>CCTV List</h2>
           </div>
           <div className="list-card">
-            <div className="cctv-list" id="cctv-list">
+            <div className="cctv-list">
               {cctvs.map((cctv) => (
                 <button
                   className={`cctv-item ${cctv.selected ? "is-active" : ""}`}
-                  data-index={cctv.index}
                   key={`${cctv.index}-${cctv.name}`}
                   onClick={() => selectCctv(cctv.index)}
                   type="button"
                 >
-                  <span className="cctv-index">
-                    {String(cctv.index + 1).padStart(3, "0")}
-                  </span>
+                  <span className="cctv-index">{String(cctv.index + 1).padStart(3, "0")}</span>
                   <span className="cctv-name">{cctv.name}</span>
                 </button>
               ))}
@@ -416,7 +431,7 @@ function normalizeBackendUrl(url) {
   if (!url) return "";
   if (url.startsWith("http://") || url.startsWith("https://")) return url;
   if (!API_URL) return url;
-  return `${API_URL}${url}`;
+  return `${API_URL}${url.startsWith("/") ? "" : "/"}${url}`;
 }
 
 function buildViewerWsUrl(apiUrl) {
@@ -430,22 +445,27 @@ function formatWsState(state) {
   return "fallback";
 }
 
-function LatestFrame({ frameSrc, imageRef, isWaiting }) {
-  return (
-    <div className="frame-player-wrap">
-      <img
-        id="video-feed"
-        ref={imageRef}
-        src={frameSrc}
-        alt={isWaiting ? "Waiting for YOLO detection frame" : "Live YOLO detection frame"}
-      />
-      {isWaiting && (
-        <div className="frame-waiting-badge">
-          YOLO sender 대기 중
-        </div>
-      )}
-    </div>
-  );
+function getFrameOrder(message) {
+  return Number(message?.latest_detection?.frame_id || message?.frame_sequence || 0);
+}
+
+function fitOverlayCanvas(canvas, image) {
+  const rect = image.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.floor(rect.width * ratio));
+  canvas.height = Math.max(1, Math.floor(rect.height * ratio));
+  canvas.style.width = `${rect.width}px`;
+  canvas.style.height = `${rect.height}px`;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  return ctx;
+}
+
+function getDirectionColor(directionLabel) {
+  if (directionLabel === 0) return "#32e67f";
+  if (directionLabel === 1) return "#ffab4d";
+  return "#ff6b6b";
 }
 
 function buildEmptyStatus(loading, error) {
@@ -460,12 +480,13 @@ function buildEmptyStatus(loading, error) {
     accident_probability: 0,
     accident_probability_history: [0],
     accident_status: "-",
+    congestion_up: false,
+    congestion_down: false,
     yolo_enabled: false,
     roi_path: API_URL || "NEXT_PUBLIC_API_URL is not set",
     player_url: "",
-    cctv_url: "",
-    stream_url: "",
     frame_url: "",
+    latest_detection: null,
   };
 }
 
@@ -493,7 +514,6 @@ function drawLineChart(canvas, values, options) {
   const points = values.length > 1 ? values : [0, values[0] || 0];
 
   ctx.clearRect(0, 0, width, height);
-
   ctx.strokeStyle = options.gridColor;
   ctx.lineWidth = 1;
   for (let i = 0; i < 4; i += 1) {
@@ -531,14 +551,6 @@ function drawLineChart(canvas, values, options) {
   ctx.strokeStyle = options.lineColor;
   ctx.lineWidth = 3;
   ctx.stroke();
-
-  const lastValue = points[points.length - 1] || 0;
-  const lastX = width - padding.right;
-  const lastY = padding.top + innerHeight - (Math.min(lastValue, maxValue) / maxValue) * innerHeight;
-  ctx.fillStyle = options.lineColor;
-  ctx.beginPath();
-  ctx.arc(lastX, lastY, 4.5, 0, Math.PI * 2);
-  ctx.fill();
 }
 
 function renderCharts({
