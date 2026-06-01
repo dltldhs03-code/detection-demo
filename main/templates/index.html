@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CCTV Monitor</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="page">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Selected CCTV</p>
+        <h1 id="selected-name">{{ status.selected_name }}</h1>
+      </div>
+      <div class="status">
+        <span class="status-label">Stream Status</span>
+        <strong id="stream-status">{{ status.stream_status }}</strong>
+        <span class="status-chip {% if status.yolo_enabled %}is-on{% else %}is-off{% endif %}" id="yolo-chip">
+          {% if status.yolo_enabled %}YOLO ON{% else %}YOLO OFF{% endif %}
+        </span>
+        <p class="status-meta" id="roi-path">{{ status.roi_path }}</p>
+      </div>
+    </header>
+
+    <section class="dashboard">
+      <section class="left">
+        <div class="section-head">
+          <h2>Detection Screen</h2>
+        </div>
+        <div class="video-card">
+          <img
+            id="video-feed"
+            src="{{ url_for('video_feed') }}"
+            alt="CCTV detection feed"
+          >
+        </div>
+
+        <article class="metric-panel congestion-strip">
+          <div class="section-head congestion-head">
+            <h2>Traffic Status</h2>
+          </div>
+          <div class="congestion-grid">
+            <div class="congestion-item downbound">
+              <span class="congestion-label">하행 :</span>
+              <strong class="congestion-value" id="congestion-down">{{ "복잡" if status.congestion_down else "원활" }}</strong>
+            </div>
+            <div class="congestion-item upbound">
+              <span class="congestion-label">상행 :</span>
+              <strong class="congestion-value" id="congestion-up">{{ "복잡" if status.congestion_up else "원활" }}</strong>
+            </div>
+          </div>
+        </article>
+
+        <section class="analytics">
+          <article class="metric-panel traffic-panel">
+            <div class="panel-head">
+              <div>
+                <p class="metric-label">Traffic Analytics</p>
+                <h3>교통량 추이</h3>
+              </div>
+              <div class="traffic-total">
+                <span>현재 총 교통량</span>
+                <strong id="traffic-count">{{ status.traffic_count }}</strong>
+              </div>
+            </div>
+
+            <div class="traffic-charts">
+              <section class="traffic-chart-card downbound">
+                <div class="chart-title-row">
+                  <div>
+                    <p class="chart-kicker">Downbound</p>
+                    <h4>하행 교통량</h4>
+                  </div>
+                  <strong class="chart-value" id="traffic-down">{{ status.traffic_down }}</strong>
+                </div>
+                <canvas id="traffic-down-chart" class="traffic-chart" width="640" height="240"></canvas>
+              </section>
+
+              <section class="traffic-chart-card upbound">
+                <div class="chart-title-row">
+                  <div>
+                    <p class="chart-kicker">Upbound</p>
+                    <h4>상행 교통량</h4>
+                  </div>
+                  <strong class="chart-value" id="traffic-up">{{ status.traffic_up }}</strong>
+                </div>
+                <canvas id="traffic-up-chart" class="traffic-chart" width="640" height="240"></canvas>
+              </section>
+            </div>
+          </article>
+
+        </section>
+      </section>
+
+      <aside class="right">
+        <div class="section-head">
+          <h2>CCTV List</h2>
+        </div>
+        <div class="list-card">
+          <div class="cctv-list" id="cctv-list">
+            {% for cctv in cctvs %}
+            <button
+              class="cctv-item {% if cctv.selected %}is-active{% endif %}"
+              data-index="{{ cctv.index }}"
+              type="button"
+            >
+              <span class="cctv-index">{{ "%03d"|format(cctv.index + 1) }}</span>
+              <span class="cctv-name">{{ cctv.name }}</span>
+            </button>
+            {% endfor %}
+          </div>
+        </div>
+      </aside>
+    </section>
+  </main>
+
+  <script>
+    const list = document.getElementById("cctv-list");
+    const selectedName = document.getElementById("selected-name");
+    const streamStatus = document.getElementById("stream-status");
+    const trafficCount = document.getElementById("traffic-count");
+    const trafficUp = document.getElementById("traffic-up");
+    const trafficDown = document.getElementById("traffic-down");
+    const congestionUp = document.getElementById("congestion-up");
+    const congestionDown = document.getElementById("congestion-down");
+    const videoFeed = document.getElementById("video-feed");
+    const yoloChip = document.getElementById("yolo-chip");
+    const roiPath = document.getElementById("roi-path");
+    const trafficUpChart = document.getElementById("traffic-up-chart");
+    const trafficDownChart = document.getElementById("traffic-down-chart");
+    let activePlayerUrl = {{ status.get('player_url', url_for('video_feed'))|tojson }};
+    let refreshInFlight = false;
+    let lastChartRenderAt = 0;
+    const STATUS_REFRESH_INTERVAL_MS = 500;
+    const CHART_REFRESH_INTERVAL_MS = 1000;
+
+    function fitCanvas(canvas) {
+      const ratio = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.max(1, Math.floor(rect.width * ratio));
+      canvas.height = Math.max(1, Math.floor(rect.height * ratio));
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      return ctx;
+    }
+
+    function drawLineChart(canvas, values, options) {
+      const ctx = fitCanvas(canvas);
+      const width = canvas.getBoundingClientRect().width;
+      const height = canvas.getBoundingClientRect().height;
+      const padding = { top: 18, right: 12, bottom: 24, left: 12 };
+      const innerWidth = width - padding.left - padding.right;
+      const innerHeight = height - padding.top - padding.bottom;
+      const maxValue = Math.max(6, ...values, options.maxFloor || 0);
+      const points = values.length > 1 ? values : [0, values[0] || 0];
+
+      ctx.clearRect(0, 0, width, height);
+
+      ctx.strokeStyle = options.gridColor;
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 4; i += 1) {
+        const y = padding.top + (innerHeight / 3) * i;
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(width - padding.right, y);
+        ctx.stroke();
+      }
+
+      const gradient = ctx.createLinearGradient(0, padding.top, 0, height - padding.bottom);
+      gradient.addColorStop(0, options.fillTop);
+      gradient.addColorStop(1, options.fillBottom);
+
+      ctx.beginPath();
+      points.forEach((value, index) => {
+        const x = padding.left + (innerWidth * index) / Math.max(1, points.length - 1);
+        const y = padding.top + innerHeight - (Math.min(value, maxValue) / maxValue) * innerHeight;
+        if (index === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+
+      ctx.lineTo(width - padding.right, height - padding.bottom);
+      ctx.lineTo(padding.left, height - padding.bottom);
+      ctx.closePath();
+      ctx.fillStyle = gradient;
+      ctx.fill();
+
+      ctx.beginPath();
+      points.forEach((value, index) => {
+        const x = padding.left + (innerWidth * index) / Math.max(1, points.length - 1);
+        const y = padding.top + innerHeight - (Math.min(value, maxValue) / maxValue) * innerHeight;
+        if (index === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+      ctx.strokeStyle = options.lineColor;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+
+      const lastValue = points[points.length - 1] || 0;
+      const lastX = width - padding.right;
+      const lastY = padding.top + innerHeight - (Math.min(lastValue, maxValue) / maxValue) * innerHeight;
+      ctx.fillStyle = options.lineColor;
+      ctx.beginPath();
+      ctx.arc(lastX, lastY, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function renderCharts(data) {
+      drawLineChart(trafficUpChart, data.traffic_up_history || [0], {
+        lineColor: "#3cf28a",
+        fillTop: "rgba(60, 242, 138, 0.32)",
+        fillBottom: "rgba(60, 242, 138, 0.02)",
+        gridColor: "rgba(160, 184, 220, 0.14)",
+        maxFloor: data.traffic_count + 2,
+      });
+
+      drawLineChart(trafficDownChart, data.traffic_down_history || [0], {
+        lineColor: "#ffae42",
+        fillTop: "rgba(255, 174, 66, 0.32)",
+        fillBottom: "rgba(255, 174, 66, 0.02)",
+        gridColor: "rgba(160, 184, 220, 0.14)",
+        maxFloor: data.traffic_count + 2,
+      });
+    }
+
+    async function refreshStatus() {
+      if (refreshInFlight || document.hidden) return;
+      refreshInFlight = true;
+      try {
+        const response = await fetch("/api/status");
+        const data = await response.json();
+        selectedName.textContent = data.selected_name;
+        streamStatus.textContent = data.stream_status;
+        trafficCount.textContent = data.traffic_count;
+        trafficUp.textContent = data.traffic_up;
+        trafficDown.textContent = data.traffic_down;
+        congestionUp.textContent = data.congestion_up ? "복잡" : "원활";
+        congestionDown.textContent = data.congestion_down ? "복잡" : "원활";
+        yoloChip.textContent = data.yolo_enabled ? "YOLO ON" : "YOLO OFF";
+        yoloChip.classList.toggle("is-on", Boolean(data.yolo_enabled));
+        yoloChip.classList.toggle("is-off", !data.yolo_enabled);
+        roiPath.textContent = data.roi_path || "-";
+        if (data.player_url && activePlayerUrl !== data.player_url) {
+          activePlayerUrl = data.player_url;
+          videoFeed.src = data.player_url;
+        }
+        const now = Date.now();
+        if (now - lastChartRenderAt >= CHART_REFRESH_INTERVAL_MS) {
+          renderCharts(data);
+          lastChartRenderAt = now;
+        }
+
+        document.querySelectorAll(".cctv-item").forEach((button) => {
+          const isSelected = Number(button.dataset.index) === data.selected_index;
+          button.classList.toggle("is-active", isSelected);
+        });
+      } finally {
+        refreshInFlight = false;
+      }
+    }
+
+    list.addEventListener("click", async (event) => {
+      const button = event.target.closest(".cctv-item");
+      if (!button) return;
+
+      const index = button.dataset.index;
+      const response = await fetch(`/api/select/${index}`, { method: "POST" });
+      const data = await response.json();
+      if (!response.ok || !data.ok) {
+        alert(data.error || "스트림 전환에 실패했습니다.");
+        return;
+      }
+
+      activePlayerUrl = data.status.player_url;
+      videoFeed.src = data.status.player_url;
+      refreshStatus();
+    });
+
+    window.addEventListener("resize", () => refreshStatus());
+    videoFeed.src = activePlayerUrl;
+    renderCharts({
+      traffic_count: {{ status.get('traffic_count', 0)|tojson }},
+      traffic_up_history: {{ status.get('traffic_up_history', [0])|tojson }},
+      traffic_down_history: {{ status.get('traffic_down_history', [0])|tojson }},
+    });
+    setInterval(refreshStatus, STATUS_REFRESH_INTERVAL_MS);
+  </script>
+</body>
+</html>

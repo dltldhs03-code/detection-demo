@@ -112,25 +112,6 @@ body {
   position: relative;
 }
 
-.frame-player-wrap {
-  position: relative;
-  width: 100%;
-}
-
-.frame-waiting-badge {
-  position: absolute;
-  left: 16px;
-  bottom: 16px;
-  z-index: 2;
-  padding: 10px 12px;
-  border: 1px solid rgba(94, 110, 138, 0.65);
-  border-radius: 999px;
-  background: rgba(24, 29, 41, 0.88);
-  color: var(--muted);
-  font-size: 0.9rem;
-  font-weight: 700;
-}
-
 .video-card video,
 .video-card img {
   display: block;
@@ -139,97 +120,6 @@ body {
   object-fit: contain;
   background: #121822;
   border-radius: 14px;
-}
-
-.video-placeholder {
-  position: relative;
-  display: block;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  overflow: hidden;
-  background:
-    linear-gradient(90deg, rgba(93, 163, 255, 0.08) 1px, transparent 1px),
-    linear-gradient(rgba(93, 163, 255, 0.08) 1px, transparent 1px),
-    #121822;
-  background-size: 42px 42px, 42px 42px, auto;
-  border-radius: 14px;
-  color: var(--muted);
-  display: grid;
-  font-weight: 700;
-  place-items: center;
-  text-align: center;
-}
-
-.video-placeholder::after {
-  content: "";
-  position: absolute;
-  inset: 22px;
-  border: 2px solid #3e4e68;
-}
-
-.video-placeholder-title,
-.video-placeholder-message {
-  position: absolute;
-  left: 28px;
-  z-index: 1;
-  font-weight: 700;
-}
-
-.video-placeholder-title {
-  top: 28px;
-  color: #eef3f8;
-  font-size: 1rem;
-}
-
-.video-placeholder-message {
-  top: 76px;
-  color: #78b6ff;
-  font-size: 0.95rem;
-}
-
-.demo-bbox {
-  position: absolute;
-  left: 22%;
-  top: 24%;
-  width: 34%;
-  height: 40%;
-  border: 3px solid #5dff9b;
-  box-shadow: 0 0 22px rgba(93, 255, 155, 0.25);
-  z-index: 1;
-}
-
-.demo-bbox span {
-  position: absolute;
-  left: -3px;
-  top: -30px;
-  padding: 5px 9px;
-  border-radius: 6px 6px 0 0;
-  background: #5dff9b;
-  color: #0b1a12;
-  font-size: 0.9rem;
-  font-weight: 800;
-}
-
-.demo-readout {
-  position: absolute;
-  left: 28px;
-  bottom: 28px;
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-width: calc(100% - 56px);
-  padding: 12px 14px;
-  border: 1px solid rgba(94, 110, 138, 0.45);
-  border-radius: 12px;
-  background: rgba(18, 24, 34, 0.78);
-  color: var(--text);
-  overflow-wrap: anywhere;
-}
-
-.demo-readout span {
-  color: var(--muted);
-  font-size: 0.9rem;
 }
 
 .video-overlay {
@@ -254,6 +144,55 @@ body {
   display: grid;
   gap: 18px;
   margin-top: 18px;
+}
+
+.congestion-strip {
+  margin-top: 18px;
+  padding: 18px 22px;
+}
+
+.congestion-head h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.congestion-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 10px;
+}
+
+.congestion-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-radius: 18px;
+  border: 1px solid rgba(94, 110, 138, 0.45);
+  background: rgba(24, 29, 41, 0.82);
+}
+
+.congestion-item.upbound {
+  background:
+    linear-gradient(180deg, rgba(24, 79, 73, 0.35), rgba(24, 29, 41, 0.92));
+}
+
+.congestion-item.downbound {
+  background:
+    linear-gradient(180deg, rgba(110, 68, 17, 0.35), rgba(24, 29, 41, 0.92));
+}
+
+.congestion-label {
+  color: var(--muted);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.congestion-value {
+  font-size: clamp(1.5rem, 2.5vw, 2.2rem);
+  line-height: 1;
 }
 
 .metric-panel {
@@ -365,6 +304,16 @@ body {
   justify-content: center;
 }
 
+.probability-block.upbound {
+  background:
+    linear-gradient(180deg, rgba(24, 79, 73, 0.35), rgba(24, 29, 41, 0.9));
+}
+
+.probability-block.downbound {
+  background:
+    linear-gradient(180deg, rgba(110, 68, 17, 0.35), rgba(24, 29, 41, 0.9));
+}
+
 .probability-value {
   display: flex;
   align-items: baseline;
@@ -394,6 +343,14 @@ body {
   border-radius: inherit;
   background: linear-gradient(90deg, #ffcd70 0%, #ff8a7a 55%, #ff5f73 100%);
   transition: width 220ms ease;
+}
+
+.probability-fill.upbound {
+  background: linear-gradient(90deg, #3cf28a 0%, #24c78f 100%);
+}
+
+.probability-fill.downbound {
+  background: linear-gradient(90deg, #ffcd70 0%, #ff8a7a 100%);
 }
 
 .accident-chart-wrap {
@@ -456,7 +413,8 @@ body {
   }
 
   .traffic-charts,
-  .accident-body {
+  .accident-body,
+  .congestion-grid {
     grid-template-columns: 1fr;
   }
 
