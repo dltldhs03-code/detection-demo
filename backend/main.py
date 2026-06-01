@@ -484,8 +484,7 @@ def _latest_frame_url():
     if latest_frame_bytes is None or latest_detection is None:
         return ""
 
-    timestamp = quote(str(latest_detection.get("timestamp", "")), safe="")
-    return f"/api/latest-frame?ts={timestamp}"
+    return f"/api/latest-frame?seq={latest_frame_sequence}"
 
 
 def _decode_base64_image(value):
