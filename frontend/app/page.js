@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || buildViewerWsUrl(API_URL);
 const VIDEO_FEED_URL = buildVideoFeedUrl(API_URL);
+const FRAME_IMAGE_URL = buildFrameImageUrl(API_URL);
 const SHOW_OVERLAY = ["1", "true", "yes"].includes(
   String(process.env.NEXT_PUBLIC_SHOW_OVERLAY || "").toLowerCase(),
 );
@@ -244,6 +245,8 @@ export default function HomePage() {
   }
 
   const viewStatus = useMemo(() => status || buildEmptyStatus(loading, error), [status, loading, error]);
+  const frameId = Number(viewStatus.latest_detection?.frame_id || 0);
+  const frameSrc = FRAME_IMAGE_URL ? `${FRAME_IMAGE_URL}?frame_id=${frameId}&t=${viewStatus.message_sequence || frameId}` : "";
   const streamStatusText = `${error || viewStatus.stream_status} · WS ${formatWsState(wsState)} · sync ${SYNC_DELAY_MS}ms`;
 
   return (
@@ -273,7 +276,7 @@ export default function HomePage() {
               <img
                 id="video-feed"
                 ref={frameImgRef}
-                src={VIDEO_FEED_URL || undefined}
+                src={frameSrc || undefined}
                 alt="Live CCTV stream"
                 onLoad={() => {
                   if (SHOW_OVERLAY) drawOverlay(viewStatus);
@@ -398,6 +401,11 @@ function buildVideoFeedUrl(apiUrl) {
   return `${apiUrl.replace(/\/$/, "")}/video_feed`;
 }
 
+function buildFrameImageUrl(apiUrl) {
+  if (!apiUrl) return "";
+  return `${apiUrl.replace(/\/$/, "")}/frame.jpg`;
+}
+
 function formatWsState(state) {
   if (state === "connected") return "연결됨";
   if (state === "connecting") return "연결 중";
@@ -440,6 +448,7 @@ function buildEmptyStatus(loading, error) {
     yolo_enabled: false,
     roi_path: API_URL || "NEXT_PUBLIC_API_URL is not set",
     player_url: VIDEO_FEED_URL,
+    message_sequence: 0,
     latest_detection: null,
   };
 }

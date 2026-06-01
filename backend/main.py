@@ -520,6 +520,17 @@ def video_feed():
     return Response(mjpeg_stream(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
+@app.route("/frame.jpg")
+def frame_jpg():
+    with latest_frame_condition:
+        frame = latest_frame_bytes or PLACEHOLDER_FRAME_BYTES
+
+    response = Response(frame, mimetype="image/jpeg")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
 @app.route("/api/cctvs")
 def api_cctvs():
     _ensure_cctv_records()
