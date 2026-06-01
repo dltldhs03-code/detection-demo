@@ -1,5 +1,1 @@
-python send_yolo_detection.py \
-  --backend-url https://detection-demo-production.up.railway.app \
-  --model yolov8n.pt \
-  --source 0 \
-  --interval 0.3
+DETECTION_BACKEND_URL=https://detection-demo-production.up.railway.app DETECTION_TRANSPORT=websocket DETECTION_WS_HTTP_FALLBACK=1 DETECTION_LOG_SEND=1 python pruned_yolo_cctv.py
