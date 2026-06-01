@@ -47,6 +47,7 @@ export default function HomePage() {
   const webrtcWsRef = useRef(null);
   const peerConnectionRef = useRef(null);
   const webrtcReconnectTimerRef = useRef(null);
+  const webrtcPingTimerRef = useRef(null);
 
   async function refreshStatus() {
     if (!API_URL) {
@@ -128,6 +129,7 @@ export default function HomePage() {
     return () => {
       closeWebRtcViewer();
       if (webrtcReconnectTimerRef.current) clearTimeout(webrtcReconnectTimerRef.current);
+      if (webrtcPingTimerRef.current) clearInterval(webrtcPingTimerRef.current);
     };
   }, []);
 
@@ -285,6 +287,10 @@ export default function HomePage() {
   }
 
   function closeWebRtcViewer() {
+    if (webrtcPingTimerRef.current) {
+      clearInterval(webrtcPingTimerRef.current);
+      webrtcPingTimerRef.current = null;
+    }
     if (webrtcWsRef.current) {
       const ws = webrtcWsRef.current;
       ws.onopen = null;
@@ -362,7 +368,13 @@ export default function HomePage() {
       const ws = new WebSocket(WEBRTC_WS_URL);
       webrtcWsRef.current = ws;
       setWebrtcState("connecting");
-      ws.onopen = () => startWebRtcOffer(ws).catch(() => setWebrtcState("offer-failed"));
+      ws.onopen = () => {
+        if (webrtcPingTimerRef.current) clearInterval(webrtcPingTimerRef.current);
+        webrtcPingTimerRef.current = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
+        }, 10000);
+        startWebRtcOffer(ws).catch(() => setWebrtcState("offer-failed"));
+      };
       ws.onmessage = async (event) => {
         const message = JSON.parse(event.data);
         if (message.type === "ping") {
@@ -385,6 +397,10 @@ export default function HomePage() {
         }
       };
       ws.onclose = () => {
+        if (webrtcPingTimerRef.current) {
+          clearInterval(webrtcPingTimerRef.current);
+          webrtcPingTimerRef.current = null;
+        }
         setWebrtcState("reconnecting");
         scheduleWebRtcReconnect();
       };

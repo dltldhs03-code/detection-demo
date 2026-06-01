@@ -557,7 +557,9 @@ def ws_webrtc_sender(ws):
                 _safe_send_json(ws, {"type": "ping"})
                 continue
             if raw_message is None:
-                break
+                if not _safe_send_json(ws, {"type": "ping"}):
+                    break
+                continue
             message = json.loads(raw_message)
             message_type = message.get("type")
             viewer_id = message.get("viewer_id")
@@ -602,7 +604,9 @@ def ws_webrtc_viewer(ws):
                 _safe_send_json(ws, {"type": "ping"})
                 continue
             if raw_message is None:
-                break
+                if not _safe_send_json(ws, {"type": "ping"}):
+                    break
+                continue
             message = json.loads(raw_message)
             message["viewer_id"] = viewer_id
             if message.get("type") == "ping":
