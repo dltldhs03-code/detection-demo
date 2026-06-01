@@ -12,7 +12,7 @@ const SHOW_OVERLAY = ["1", "true", "yes"].includes(
 const STATUS_REFRESH_INTERVAL_MS = 1000;
 const CHART_REFRESH_INTERVAL_MS = 1000;
 const SYNC_DELAY_MS = Number(process.env.NEXT_PUBLIC_SYNC_DELAY_MS || 250);
-const FRAME_REFRESH_INTERVAL_MS = Math.max(100, Number(process.env.NEXT_PUBLIC_FRAME_REFRESH_MS) || 250);
+const FRAME_REFRESH_INTERVAL_MS = Math.max(250, Number(process.env.NEXT_PUBLIC_FRAME_REFRESH_MS) || 600);
 
 export default function HomePage() {
   const [status, setStatus] = useState(null);
@@ -35,6 +35,7 @@ export default function HomePage() {
   const lastAppliedFrameIdRef = useRef(-1);
   const lastChartDrawAtRef = useRef(0);
   const chartTimerRef = useRef(null);
+  const frameRefreshTimerRef = useRef(null);
 
   async function refreshStatus() {
     if (!API_URL) {
@@ -91,10 +92,10 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!FRAME_IMAGE_URL) return undefined;
-    const intervalId = setInterval(() => {
-      setFrameRefreshKey(Date.now());
-    }, FRAME_REFRESH_INTERVAL_MS);
-    return () => clearInterval(intervalId);
+    scheduleNextFrameRefresh(0);
+    return () => {
+      if (frameRefreshTimerRef.current) clearTimeout(frameRefreshTimerRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -105,6 +106,7 @@ export default function HomePage() {
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       if (syncTimerRef.current) clearInterval(syncTimerRef.current);
       if (chartTimerRef.current) clearTimeout(chartTimerRef.current);
+      if (frameRefreshTimerRef.current) clearTimeout(frameRefreshTimerRef.current);
       if (wsRef.current) wsRef.current.close();
     };
   }, []);
@@ -254,6 +256,14 @@ export default function HomePage() {
     });
   }
 
+  function scheduleNextFrameRefresh(delay = FRAME_REFRESH_INTERVAL_MS) {
+    if (!FRAME_IMAGE_URL) return;
+    if (frameRefreshTimerRef.current) clearTimeout(frameRefreshTimerRef.current);
+    frameRefreshTimerRef.current = setTimeout(() => {
+      setFrameRefreshKey(Date.now());
+    }, delay);
+  }
+
   const viewStatus = useMemo(() => status || buildEmptyStatus(loading, error), [status, loading, error]);
   const frameId = Number(viewStatus.latest_detection?.frame_id || 0);
   const frameSrc = FRAME_IMAGE_URL ? `${FRAME_IMAGE_URL}?frame_id=${frameId}&t=${frameRefreshKey}` : "";
@@ -290,7 +300,9 @@ export default function HomePage() {
                 alt="Live CCTV stream"
                 onLoad={() => {
                   if (SHOW_OVERLAY) drawOverlay(viewStatus);
+                  scheduleNextFrameRefresh();
                 }}
+                onError={() => scheduleNextFrameRefresh(FRAME_REFRESH_INTERVAL_MS * 2)}
               />
               <canvas ref={overlayCanvasRef} aria-hidden="true" />
             </div>
