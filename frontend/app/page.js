@@ -386,7 +386,11 @@ export default function HomePage() {
           return;
         }
         if (message.type === "candidate" && peerConnectionRef.current && message.candidate) {
-          await peerConnectionRef.current.addIceCandidate(message.candidate);
+          try {
+            await peerConnectionRef.current.addIceCandidate(message.candidate);
+          } catch (_err) {
+            // Ignore malformed or stale ICE candidates; the peer connection can continue.
+          }
           return;
         }
         if (message.type === "sender-unavailable" || message.type === "sender-disconnected") {
