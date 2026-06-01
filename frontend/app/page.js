@@ -4,8 +4,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || buildViewerWsUrl(API_URL);
+const WEBRTC_WS_URL = process.env.NEXT_PUBLIC_WEBRTC_WS_URL || buildWebRtcViewerWsUrl(API_URL);
 const VIDEO_FEED_URL = buildVideoFeedUrl(API_URL);
 const FRAME_IMAGE_URL = buildFrameImageUrl(API_URL);
+const WEBRTC_ENABLED = String(process.env.NEXT_PUBLIC_VIDEO_TRANSPORT || "webrtc").toLowerCase() !== "frame";
+const WEBRTC_ICE_SERVERS = parseIceServers(process.env.NEXT_PUBLIC_WEBRTC_ICE_SERVERS);
+const FRAME_FALLBACK_ENABLED = !WEBRTC_ENABLED || ["1", "true", "yes"].includes(
+  String(process.env.NEXT_PUBLIC_FRAME_FALLBACK || "").toLowerCase(),
+);
 const SHOW_OVERLAY = ["1", "true", "yes"].includes(
   String(process.env.NEXT_PUBLIC_SHOW_OVERLAY || "").toLowerCase(),
 );
@@ -20,8 +26,10 @@ export default function HomePage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [wsState, setWsState] = useState("connecting");
+  const [webrtcState, setWebrtcState] = useState(WEBRTC_ENABLED ? "connecting" : "off");
   const [frameRefreshKey, setFrameRefreshKey] = useState(0);
 
+  const webrtcVideoRef = useRef(null);
   const frameImgRef = useRef(null);
   const overlayCanvasRef = useRef(null);
   const trafficUpChartRef = useRef(null);
@@ -36,6 +44,9 @@ export default function HomePage() {
   const lastChartDrawAtRef = useRef(0);
   const chartTimerRef = useRef(null);
   const frameRefreshTimerRef = useRef(null);
+  const webrtcWsRef = useRef(null);
+  const peerConnectionRef = useRef(null);
+  const webrtcReconnectTimerRef = useRef(null);
 
   async function refreshStatus() {
     if (!API_URL) {
@@ -91,7 +102,7 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
-    if (!FRAME_IMAGE_URL) return undefined;
+    if (!FRAME_FALLBACK_ENABLED || !FRAME_IMAGE_URL) return undefined;
     scheduleNextFrameRefresh(0);
     return () => {
       if (frameRefreshTimerRef.current) clearTimeout(frameRefreshTimerRef.current);
@@ -108,6 +119,15 @@ export default function HomePage() {
       if (chartTimerRef.current) clearTimeout(chartTimerRef.current);
       if (frameRefreshTimerRef.current) clearTimeout(frameRefreshTimerRef.current);
       if (wsRef.current) wsRef.current.close();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!WEBRTC_ENABLED) return undefined;
+    connectWebRtcViewer();
+    return () => {
+      closeWebRtcViewer();
+      if (webrtcReconnectTimerRef.current) clearTimeout(webrtcReconnectTimerRef.current);
     };
   }, []);
 
@@ -207,7 +227,7 @@ export default function HomePage() {
   function drawOverlay(nextStatus) {
     if (!SHOW_OVERLAY) return;
     const canvas = overlayCanvasRef.current;
-    const image = frameImgRef.current;
+    const image = WEBRTC_ENABLED ? webrtcVideoRef.current : frameImgRef.current;
     if (!canvas || !image) return;
     const ctx = fitOverlayCanvas(canvas, image);
     if (!ctx) return;
@@ -257,17 +277,128 @@ export default function HomePage() {
   }
 
   function scheduleNextFrameRefresh(delay = FRAME_REFRESH_INTERVAL_MS) {
-    if (!FRAME_IMAGE_URL) return;
+    if (!FRAME_FALLBACK_ENABLED || !FRAME_IMAGE_URL) return;
     if (frameRefreshTimerRef.current) clearTimeout(frameRefreshTimerRef.current);
     frameRefreshTimerRef.current = setTimeout(() => {
       setFrameRefreshKey(Date.now());
     }, delay);
   }
 
+  function closeWebRtcViewer() {
+    if (webrtcWsRef.current) {
+      const ws = webrtcWsRef.current;
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.close();
+      webrtcWsRef.current = null;
+    }
+    if (peerConnectionRef.current) {
+      const pc = peerConnectionRef.current;
+      pc.ontrack = null;
+      pc.onicecandidate = null;
+      pc.onconnectionstatechange = null;
+      pc.close();
+      peerConnectionRef.current = null;
+    }
+    if (webrtcVideoRef.current) {
+      webrtcVideoRef.current.srcObject = null;
+    }
+  }
+
+  function scheduleWebRtcReconnect() {
+    if (!WEBRTC_ENABLED) return;
+    if (webrtcReconnectTimerRef.current) clearTimeout(webrtcReconnectTimerRef.current);
+    webrtcReconnectTimerRef.current = setTimeout(connectWebRtcViewer, 2000);
+  }
+
+  async function startWebRtcOffer(ws) {
+    if (!WEBRTC_WS_URL || typeof RTCPeerConnection === "undefined") {
+      setWebrtcState("unsupported");
+      return;
+    }
+
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close();
+    }
+    const pc = new RTCPeerConnection({
+      iceServers: WEBRTC_ICE_SERVERS,
+    });
+    peerConnectionRef.current = pc;
+
+    pc.ontrack = (event) => {
+      const [stream] = event.streams;
+      if (webrtcVideoRef.current && stream) {
+        webrtcVideoRef.current.srcObject = stream;
+      }
+      setWebrtcState("streaming");
+    };
+    pc.onicecandidate = (event) => {
+      if (!event.candidate || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: "candidate", candidate: event.candidate.toJSON() }));
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "connected") setWebrtcState("connected");
+      if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {
+        setWebrtcState("reconnecting");
+        scheduleWebRtcReconnect();
+      }
+    };
+
+    pc.addTransceiver("video", { direction: "recvonly" });
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type: "offer", sdp: pc.localDescription.sdp }));
+  }
+
+  function connectWebRtcViewer() {
+    if (!WEBRTC_WS_URL) {
+      setWebrtcState("no-url");
+      return;
+    }
+    closeWebRtcViewer();
+    try {
+      const ws = new WebSocket(WEBRTC_WS_URL);
+      webrtcWsRef.current = ws;
+      setWebrtcState("connecting");
+      ws.onopen = () => startWebRtcOffer(ws).catch(() => setWebrtcState("offer-failed"));
+      ws.onmessage = async (event) => {
+        const message = JSON.parse(event.data);
+        if (message.type === "ping") {
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "pong" }));
+          return;
+        }
+        if (message.type === "answer" && peerConnectionRef.current) {
+          await peerConnectionRef.current.setRemoteDescription({ type: "answer", sdp: message.sdp });
+          return;
+        }
+        if (message.type === "candidate" && peerConnectionRef.current && message.candidate) {
+          await peerConnectionRef.current.addIceCandidate(message.candidate);
+          return;
+        }
+        if (message.type === "sender-unavailable" || message.type === "sender-disconnected") {
+          setWebrtcState("waiting-sender");
+        }
+        if (message.type === "sender-ready") {
+          startWebRtcOffer(ws).catch(() => setWebrtcState("offer-failed"));
+        }
+      };
+      ws.onclose = () => {
+        setWebrtcState("reconnecting");
+        scheduleWebRtcReconnect();
+      };
+      ws.onerror = () => ws.close();
+    } catch (_err) {
+      setWebrtcState("reconnecting");
+      scheduleWebRtcReconnect();
+    }
+  }
+
   const viewStatus = useMemo(() => status || buildEmptyStatus(loading, error), [status, loading, error]);
   const frameId = Number(viewStatus.latest_detection?.frame_id || 0);
-  const frameSrc = FRAME_IMAGE_URL ? `${FRAME_IMAGE_URL}?frame_id=${frameId}&t=${frameRefreshKey}` : "";
-  const streamStatusText = `${error || viewStatus.stream_status} · WS ${formatWsState(wsState)} · sync ${SYNC_DELAY_MS}ms · frame ${FRAME_REFRESH_INTERVAL_MS}ms`;
+  const frameSrc = FRAME_FALLBACK_ENABLED && FRAME_IMAGE_URL ? `${FRAME_IMAGE_URL}?frame_id=${frameId}&t=${frameRefreshKey}` : "";
+  const streamStatusText = `${error || viewStatus.stream_status} · WS ${formatWsState(wsState)} · WebRTC ${webrtcState}`;
 
   return (
     <main className="page">
@@ -293,9 +424,21 @@ export default function HomePage() {
           </div>
           <div className="video-card">
             <div className="frame-stage">
+              <video
+                id="webrtc-video"
+                ref={webrtcVideoRef}
+                className={WEBRTC_ENABLED ? "" : "is-hidden"}
+                autoPlay
+                playsInline
+                muted
+                onLoadedMetadata={() => {
+                  if (SHOW_OVERLAY) drawOverlay(viewStatus);
+                }}
+              />
               <img
                 id="video-feed"
                 ref={frameImgRef}
+                className={FRAME_FALLBACK_ENABLED ? "" : "is-hidden"}
                 src={frameSrc || undefined}
                 alt="Live CCTV stream"
                 onLoad={() => {
@@ -416,6 +559,21 @@ export default function HomePage() {
 function buildViewerWsUrl(apiUrl) {
   if (!apiUrl) return "";
   return `${apiUrl.replace(/^http/, "ws").replace(/\/$/, "")}/ws/viewer`;
+}
+
+function parseIceServers(value) {
+  if (!value) return [{ urls: "stun:stun.l.google.com:19302" }];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.length ? parsed : [{ urls: "stun:stun.l.google.com:19302" }];
+  } catch (_err) {
+    return [{ urls: "stun:stun.l.google.com:19302" }];
+  }
+}
+
+function buildWebRtcViewerWsUrl(apiUrl) {
+  if (!apiUrl) return "";
+  return `${apiUrl.replace(/^http/, "ws").replace(/\/$/, "")}/ws/webrtc/viewer`;
 }
 
 function buildVideoFeedUrl(apiUrl) {

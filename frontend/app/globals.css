@@ -116,6 +116,7 @@ body {
 }
 
 .frame-stage img,
+.frame-stage video,
 .frame-stage canvas {
   display: block;
   width: 100%;
@@ -123,9 +124,14 @@ body {
   border-radius: 14px;
 }
 
-.frame-stage img {
+.frame-stage img,
+.frame-stage video {
   object-fit: contain;
   background: #121822;
+}
+
+.frame-stage .is-hidden {
+  display: none;
 }
 
 .frame-stage canvas {

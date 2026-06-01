@@ -40,7 +40,14 @@ Environment variables:
 ```env
 NEXT_PUBLIC_API_URL=https://your-railway-backend.up.railway.app
 NEXT_PUBLIC_SHOW_OVERLAY=0
+NEXT_PUBLIC_VIDEO_TRANSPORT=webrtc
 NEXT_PUBLIC_FRAME_REFRESH_MS=600
 ```
 
 Set `NEXT_PUBLIC_SHOW_OVERLAY=1` only if you want the browser to draw the old ROI/bbox overlay on top of the annotated MJPEG stream.
+
+If WebRTC cannot connect in a restrictive NAT/firewall environment, configure a TURN server through:
+
+```env
+NEXT_PUBLIC_WEBRTC_ICE_SERVERS=[{"urls":["stun:stun.l.google.com:19302"]}]
+```
