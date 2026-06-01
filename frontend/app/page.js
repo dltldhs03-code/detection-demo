@@ -12,6 +12,7 @@ const SHOW_OVERLAY = ["1", "true", "yes"].includes(
 const STATUS_REFRESH_INTERVAL_MS = 1000;
 const CHART_REFRESH_INTERVAL_MS = 1000;
 const SYNC_DELAY_MS = Number(process.env.NEXT_PUBLIC_SYNC_DELAY_MS || 250);
+const FRAME_REFRESH_INTERVAL_MS = Math.max(100, Number(process.env.NEXT_PUBLIC_FRAME_REFRESH_MS) || 250);
 
 export default function HomePage() {
   const [status, setStatus] = useState(null);
@@ -19,6 +20,7 @@ export default function HomePage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [wsState, setWsState] = useState("connecting");
+  const [frameRefreshKey, setFrameRefreshKey] = useState(0);
 
   const frameImgRef = useRef(null);
   const overlayCanvasRef = useRef(null);
@@ -84,6 +86,14 @@ export default function HomePage() {
     refreshStatus();
     refreshCctvs();
     const intervalId = setInterval(refreshStatus, STATUS_REFRESH_INTERVAL_MS);
+    return () => clearInterval(intervalId);
+  }, []);
+
+  useEffect(() => {
+    if (!FRAME_IMAGE_URL) return undefined;
+    const intervalId = setInterval(() => {
+      setFrameRefreshKey(Date.now());
+    }, FRAME_REFRESH_INTERVAL_MS);
     return () => clearInterval(intervalId);
   }, []);
 
@@ -246,8 +256,8 @@ export default function HomePage() {
 
   const viewStatus = useMemo(() => status || buildEmptyStatus(loading, error), [status, loading, error]);
   const frameId = Number(viewStatus.latest_detection?.frame_id || 0);
-  const frameSrc = FRAME_IMAGE_URL ? `${FRAME_IMAGE_URL}?frame_id=${frameId}&t=${viewStatus.message_sequence || frameId}` : "";
-  const streamStatusText = `${error || viewStatus.stream_status} · WS ${formatWsState(wsState)} · sync ${SYNC_DELAY_MS}ms`;
+  const frameSrc = FRAME_IMAGE_URL ? `${FRAME_IMAGE_URL}?frame_id=${frameId}&t=${frameRefreshKey}` : "";
+  const streamStatusText = `${error || viewStatus.stream_status} · WS ${formatWsState(wsState)} · sync ${SYNC_DELAY_MS}ms · frame ${FRAME_REFRESH_INTERVAL_MS}ms`;
 
   return (
     <main className="page">
