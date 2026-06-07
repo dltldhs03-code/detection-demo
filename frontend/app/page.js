@@ -34,7 +34,6 @@ export default function HomePage() {
   const overlayCanvasRef = useRef(null);
   const trafficUpChartRef = useRef(null);
   const trafficDownChartRef = useRef(null);
-  const accidentProbabilityChartRef = useRef(null);
   const wsRef = useRef(null);
   const shouldReconnectRef = useRef(true);
   const reconnectTimerRef = useRef(null);
@@ -219,10 +218,8 @@ export default function HomePage() {
       trafficCount: nextStatus.traffic_count || 0,
       trafficUpHistory: nextStatus.traffic_up_history || [0],
       trafficDownHistory: nextStatus.traffic_down_history || [0],
-      accidentProbabilityHistory: nextStatus.accident_probability_history || [0],
       trafficUpChart: trafficUpChartRef.current,
       trafficDownChart: trafficDownChartRef.current,
-      accidentProbabilityChart: accidentProbabilityChartRef.current,
     });
   }
 
@@ -416,6 +413,8 @@ export default function HomePage() {
   }
 
   const viewStatus = useMemo(() => status || buildEmptyStatus(loading, error), [status, loading, error]);
+  const downboundStatus = getDirectionStatus(viewStatus, 1, Boolean(viewStatus.congestion_down));
+  const upboundStatus = getDirectionStatus(viewStatus, 0, Boolean(viewStatus.congestion_up));
   const frameId = Number(viewStatus.latest_detection?.frame_id || 0);
   const frameSrc = FRAME_FALLBACK_ENABLED && FRAME_IMAGE_URL ? `${FRAME_IMAGE_URL}?frame_id=${frameId}&t=${frameRefreshKey}` : "";
   const streamStatusText = `${error || viewStatus.stream_status} · WS ${formatWsState(wsState)} · WebRTC ${webrtcState}`;
@@ -476,13 +475,35 @@ export default function HomePage() {
               <h2>Traffic Status</h2>
             </div>
             <div className="congestion-grid">
-              <div className="congestion-item downbound">
-                <span className="congestion-label">하행 :</span>
-                <strong className="congestion-value">{viewStatus.congestion_down ? "복잡" : "원활"}</strong>
+              <div className={`congestion-item downbound ${downboundStatus.accidentDetected ? "has-accident" : ""}`}>
+                <span className="congestion-label">하행</span>
+                <div className="congestion-metrics">
+                  <span className="congestion-row">
+                    <span>교통</span>
+                    <strong className="congestion-value">{downboundStatus.trafficText}</strong>
+                  </span>
+                  <span className="congestion-row">
+                    <span>사고</span>
+                    <strong className={`accident-value ${downboundStatus.accidentDetected ? "is-alert" : ""}`}>
+                      {downboundStatus.accidentText}
+                    </strong>
+                  </span>
+                </div>
               </div>
-              <div className="congestion-item upbound">
-                <span className="congestion-label">상행 :</span>
-                <strong className="congestion-value">{viewStatus.congestion_up ? "복잡" : "원활"}</strong>
+              <div className={`congestion-item upbound ${upboundStatus.accidentDetected ? "has-accident" : ""}`}>
+                <span className="congestion-label">상행</span>
+                <div className="congestion-metrics">
+                  <span className="congestion-row">
+                    <span>교통</span>
+                    <strong className="congestion-value">{upboundStatus.trafficText}</strong>
+                  </span>
+                  <span className="congestion-row">
+                    <span>사고</span>
+                    <strong className={`accident-value ${upboundStatus.accidentDetected ? "is-alert" : ""}`}>
+                      {upboundStatus.accidentText}
+                    </strong>
+                  </span>
+                </div>
               </div>
             </div>
           </article>
@@ -524,30 +545,6 @@ export default function HomePage() {
               </div>
             </article>
 
-            <article className="metric-panel accident-panel">
-              <div className="panel-head">
-                <div>
-                  <p className="metric-label">Accident Risk</p>
-                  <h3>사고 발생 확률</h3>
-                </div>
-                <div className="probability-badge">{viewStatus.accident_status}</div>
-              </div>
-              <div className="accident-body">
-                <div className="probability-block">
-                  <p className="metric-note">교통량 기반 추정치</p>
-                  <div className="probability-value">
-                    <strong>{viewStatus.accident_probability}</strong>
-                    <span>%</span>
-                  </div>
-                  <div className="probability-meter">
-                    <div className="probability-fill" style={{ width: `${viewStatus.accident_probability}%` }} />
-                  </div>
-                </div>
-                <div className="accident-chart-wrap">
-                  <canvas className="traffic-chart" width="640" height="240" ref={accidentProbabilityChartRef} />
-                </div>
-              </div>
-            </article>
           </section>
         </section>
 
@@ -631,6 +628,33 @@ function getDirectionColor(directionLabel) {
   return "#ff6b6b";
 }
 
+function getDirectionStatus(status, directionLabel, congested) {
+  const accidentDetected = hasDirectionAccident(status, directionLabel);
+  return {
+    accidentDetected,
+    trafficText: congested ? "복잡" : "원활",
+    accidentText: accidentDetected ? "발생" : "미발생",
+  };
+}
+
+function hasDirectionAccident(status, directionLabel) {
+  const explicitKey = directionLabel === 0 ? "accident_up" : "accident_down";
+  if (typeof status?.[explicitKey] === "boolean") return status[explicitKey];
+
+  const latest = status?.latest_detection || {};
+  const accidentEvents = Array.isArray(latest.accident_events) ? latest.accident_events : [];
+  const detections = Array.isArray(latest.detections) ? latest.detections : [];
+
+  return (
+    accidentEvents.some((event) =>
+      Array.isArray(event?.directions) && event.directions.some((direction) => Number(direction) === directionLabel),
+    ) ||
+    detections.some(
+      (detection) => detection?.accident_detected && Number(detection.direction_label) === directionLabel,
+    )
+  );
+}
+
 function buildEmptyStatus(loading, error) {
   return {
     selected_name: "-",
@@ -640,9 +664,6 @@ function buildEmptyStatus(loading, error) {
     traffic_down: 0,
     traffic_up_history: [0],
     traffic_down_history: [0],
-    accident_probability: 0,
-    accident_probability_history: [0],
-    accident_status: "-",
     congestion_up: false,
     congestion_down: false,
     yolo_enabled: false,
@@ -719,10 +740,8 @@ function renderCharts({
   trafficCount,
   trafficUpHistory,
   trafficDownHistory,
-  accidentProbabilityHistory,
   trafficUpChart,
   trafficDownChart,
-  accidentProbabilityChart,
 }) {
   drawLineChart(trafficUpChart, trafficUpHistory, {
     lineColor: "#3cf28a",
@@ -737,12 +756,5 @@ function renderCharts({
     fillBottom: "rgba(255, 174, 66, 0.02)",
     gridColor: "rgba(160, 184, 220, 0.14)",
     maxFloor: trafficCount + 2,
-  });
-  drawLineChart(accidentProbabilityChart, accidentProbabilityHistory, {
-    lineColor: "#ff8a7a",
-    fillTop: "rgba(255, 138, 122, 0.28)",
-    fillBottom: "rgba(255, 138, 122, 0.02)",
-    gridColor: "rgba(160, 184, 220, 0.14)",
-    maxFloor: 100,
   });
 }
