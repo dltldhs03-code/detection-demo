@@ -148,81 +148,134 @@ body {
 
 .congestion-strip {
   margin-top: 18px;
-  padding: 18px 22px;
+  padding: 20px 22px 22px;
+  border-color: rgba(92, 123, 168, 0.45);
+  background:
+    linear-gradient(180deg, rgba(22, 31, 48, 0.96), rgba(16, 22, 34, 0.96));
 }
 
 .congestion-head h2 {
   margin: 0;
-  font-size: 1rem;
+  font-size: 1.05rem;
+  letter-spacing: 0.01em;
 }
 
 .congestion-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
-  margin-top: 10px;
+  margin-top: 14px;
 }
 
 .congestion-item {
-  display: flex;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(72px, 0.45fr) minmax(180px, 1fr);
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 18px 20px;
-  border-radius: 18px;
+  gap: 18px;
+  min-height: 118px;
+  padding: 18px 20px 18px 22px;
+  overflow: hidden;
+  border-radius: 16px;
   border: 1px solid rgba(94, 110, 138, 0.45);
   background: rgba(24, 29, 41, 0.82);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.18);
+}
+
+.congestion-item::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  opacity: 0.9;
 }
 
 .congestion-item.has-accident {
   border-color: rgba(255, 75, 88, 0.72);
-  box-shadow: inset 0 0 0 1px rgba(255, 75, 88, 0.14);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 75, 88, 0.14),
+    0 18px 42px rgba(0, 0, 0, 0.2);
 }
 
 .congestion-item.upbound {
-  background: linear-gradient(180deg, rgba(24, 79, 73, 0.35), rgba(24, 29, 41, 0.92));
+  background:
+    radial-gradient(circle at 92% 8%, rgba(63, 241, 151, 0.13), transparent 34%),
+    linear-gradient(135deg, rgba(17, 60, 62, 0.72), rgba(19, 26, 39, 0.96));
+}
+
+.congestion-item.upbound::before {
+  background: #3cf28a;
 }
 
 .congestion-item.downbound {
-  background: linear-gradient(180deg, rgba(110, 68, 17, 0.35), rgba(24, 29, 41, 0.92));
+  background:
+    radial-gradient(circle at 92% 8%, rgba(255, 184, 86, 0.16), transparent 34%),
+    linear-gradient(135deg, rgba(69, 45, 24, 0.78), rgba(19, 26, 39, 0.96));
+}
+
+.congestion-item.downbound::before {
+  background: #ffb457;
 }
 
 .congestion-label {
-  color: var(--muted);
-  font-size: 1rem;
-  font-weight: 600;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  min-width: 58px;
+  padding: 9px 13px;
+  border-radius: 999px;
+  border: 1px solid rgba(154, 184, 225, 0.24);
+  background: rgba(255, 255, 255, 0.045);
+  color: #d7e6ff;
+  font-size: 0.96rem;
+  font-weight: 800;
 }
 
 .congestion-metrics {
   display: grid;
-  gap: 8px;
-  min-width: 150px;
+  gap: 10px;
+  width: 100%;
 }
 
 .congestion-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  color: var(--muted);
-  font-size: 0.9rem;
+  gap: 18px;
+  padding: 8px 10px 8px 12px;
+  border-radius: 12px;
+  background: rgba(7, 12, 22, 0.25);
+  color: #aebbd0;
+  font-size: 0.92rem;
   font-weight: 700;
 }
 
 .congestion-value {
-  font-size: clamp(1.5rem, 2.5vw, 2.2rem);
+  color: #f5f9ff;
+  font-size: clamp(1.45rem, 2.2vw, 2rem);
   line-height: 1;
-  color: var(--text);
+  font-weight: 900;
 }
 
 .accident-value {
-  color: #8bf0b0;
-  font-size: clamp(1.2rem, 2vw, 1.7rem);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 76px;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: rgba(82, 255, 156, 0.12);
+  color: #8cffb9;
+  font-size: clamp(1rem, 1.5vw, 1.22rem);
   line-height: 1;
+  font-weight: 900;
 }
 
 .accident-value.is-alert {
-  color: #ff4b58;
+  background: rgba(255, 75, 88, 0.15);
+  color: #ff6671;
 }
 
 .metric-panel {
@@ -360,6 +413,10 @@ body {
   .traffic-charts,
   .congestion-grid {
     grid-template-columns: 1fr;
+  }
+
+  .congestion-item {
+    grid-template-columns: minmax(64px, 0.3fr) minmax(0, 1fr);
   }
 
   .list-card {
